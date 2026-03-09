@@ -192,4 +192,4 @@ cp config.example.yaml config.yaml
 
 ## License
 
-[Your License Here]
+MIT License
