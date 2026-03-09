@@ -65,7 +65,14 @@ llama_model_loader: loaded meta data with 26 key-value pairs...
 **Troubleshooting:**
 - If model not found: Download model to `models/` directory
 - If out of memory: Reduce GPU_LAYERS: `export GPU_LAYERS=25 && ./scripts/run_llm.sh`
-- If llama-server not found: Install llama.cpp and add to PATH
+- If llama-server not found: Build llama.cpp with cmake:
+  ```bash
+  git clone https://github.com/ggerganov/llama.cpp
+  cd llama.cpp
+  cmake -B build -DGGML_CUDA=ON
+  cmake --build build --config Release
+  sudo cp build/bin/llama-server /usr/local/bin/
+  ```
 
 ---
 

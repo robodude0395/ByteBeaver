@@ -12,7 +12,7 @@ Phase 1 is complete with the following components:
 - Configuration management system
 - Startup scripts for LLM and Agent servers
 
-## Hardware Requirements
+## Hardware I used in my server
 
 - **GPU**: NVIDIA RTX 3080 (10GB VRAM) or equivalent
 - **RAM**: 32GB minimum
@@ -48,13 +48,18 @@ cd ..
 ### 3. Install llama.cpp
 
 ```bash
-# Clone and build llama.cpp
+# Clone llama.cpp
 git clone https://github.com/ggerganov/llama.cpp
 cd llama.cpp
-make LLAMA_CUBLAS=1  # For CUDA support
+
+# Build with CUDA support using cmake
+cmake -B build -DGGML_CUDA=ON
+cmake --build build --config Release
 
 # Add to PATH or copy binary
-sudo cp llama-server /usr/local/bin/
+sudo cp build/bin/llama-server /usr/local/bin/
+# Or add to PATH: export PATH="$PATH:$(pwd)/build/bin"
+
 cd ..
 ```
 

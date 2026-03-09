@@ -29,8 +29,10 @@ if ! command -v llama-server &> /dev/null; then
     echo "Please install llama.cpp first:"
     echo "  git clone https://github.com/ggerganov/llama.cpp"
     echo "  cd llama.cpp"
-    echo "  make LLAMA_CUBLAS=1  # For CUDA support"
-    echo "  # Add llama.cpp directory to PATH or copy llama-server to /usr/local/bin"
+    echo "  cmake -B build -DGGML_CUDA=ON"
+    echo "  cmake --build build --config Release"
+    echo "  sudo cp build/bin/llama-server /usr/local/bin/"
+    echo "  # Or add to PATH: export PATH=\"\$PATH:\$(pwd)/build/bin\""
     exit 1
 fi
 
