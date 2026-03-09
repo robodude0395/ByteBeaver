@@ -1,0 +1,72 @@
+# LLM Server Configuration
+llm:
+  base_url: "http://localhost:8001/v1"
+  model: "qwen2.5-coder-7b-instruct"
+  max_tokens: 2048
+  temperature: 0.2
+  context_window: 8192
+
+# Agent Server Configuration
+agent:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "INFO"
+  log_file: "logs/agent.log"
+  max_log_size_mb: 100
+
+# Context Engine Configuration
+context:
+  embedding_model_path: "models/bge-small-en-v1.5"
+  vector_db:
+    type: "qdrant"
+    host: "localhost"
+    port: 6333
+    collection_prefix: "workspace"
+    in_memory: true
+  chunk_size: 512
+  chunk_overlap: 50
+  file_patterns:
+    - "**/*.py"
+    - "**/*.js"
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "**/*.java"
+    - "**/*.cpp"
+    - "**/*.c"
+    - "**/*.h"
+    - "**/*.go"
+    - "**/*.rs"
+    - "**/*.md"
+  exclude_patterns:
+    - "**/node_modules/**"
+    - "**/venv/**"
+    - "**/.git/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/__pycache__/**"
+
+# Tool Configuration
+tools:
+  web_search:
+    enabled: false
+    max_results: 3
+    timeout: 5
+  terminal:
+    enabled: true
+    timeout: 60
+    allowed_commands:
+      - "npm"
+      - "pip"
+      - "pytest"
+      - "jest"
+      - "cargo"
+      - "go"
+      - "make"
+  filesystem:
+    max_file_size_mb: 10
+
+# Performance Configuration
+performance:
+  max_concurrent_tasks: 1
+  streaming_enabled: true
+  cache_embeddings: true
