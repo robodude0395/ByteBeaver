@@ -54,7 +54,7 @@ cd llama.cpp
 
 # Build with CUDA support using cmake
 cmake -B build -DGGML_CUDA=ON
-cmake --build build --config Release
+cmake --build build --config Release --parallel 8
 
 # Add to PATH or copy binary
 sudo cp build/bin/llama-server /usr/local/bin/
