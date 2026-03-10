@@ -124,20 +124,20 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Implement search_files() method using glob patterns
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6_
 
-  - [ ]* 8.2 Write property test for path resolution consistency
+  - [x]* 8.2 Write property test for path resolution consistency
     - **Property 8: Path Resolution Consistency**
     - **Validates: Requirements 5.6**
     - Test that relative paths resolve consistently to absolute paths within workspace
     - _Requirements: 5.6_
 
-  - [ ]* 8.3 Write property test for sandbox boundary enforcement
+  - [x]* 8.3 Write property test for sandbox boundary enforcement
     - **Property 9: Sandbox Boundary Enforcement**
     - **Validates: Requirements 6.1, 6.2, 6.3**
     - Test that paths escaping workspace (with "..", absolute paths) raise security errors
     - Use hypothesis to generate random path components
     - _Requirements: 6.1, 6.2, 6.3_
 
-  - [ ]* 8.4 Write unit tests for filesystem operations
+  - [x]* 8.4 Write unit tests for filesystem operations
     - Test read_file with existing and non-existent files
     - Test write_file with various content types
     - Test create_file and parent directory creation
@@ -153,7 +153,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add ToolCall dataclass for tracking tool invocations
     - _Requirements: 4.4_
 
-  - [ ]* 9.2 Write unit tests for tool system
+  - [x]* 9.2 Write unit tests for tool system
     - Test tool registration and invocation
     - Test tool call tracking
     - Test error handling for unknown tools
@@ -169,13 +169,13 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add error handling and retry logic for parsing failures
     - _Requirements: 4.3, 4.4, 12.1, 12.2, 12.4, 12.5_
 
-  - [ ]* 10.2 Write property test for directive parsing completeness
+  - [x]* 10.2 Write property test for directive parsing completeness
     - **Property 21: Directive Parsing Completeness**
     - **Validates: Requirements 12.1, 12.2, 12.3, 12.4, 12.5**
     - Test that all WRITE_FILE, PATCH_FILE, TOOL_CALL directives are extracted correctly
     - _Requirements: 12.1-12.5_
 
-  - [ ]* 10.3 Write unit tests for executor
+  - [x]* 10.3 Write unit tests for executor
     - Test execute_task with mock LLM responses
     - Test parsing of WRITE_FILE directives
     - Test parsing of PATCH_FILE directives
@@ -193,13 +193,13 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Format prompt with clear sections and instructions
     - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6_
 
-  - [ ]* 11.2 Write property test for prompt completeness
+  - [x]* 11.2 Write property test for prompt completeness
     - **Property 20: Prompt Completeness**
     - **Validates: Requirements 11.1-11.6**
     - Test that all required elements are present in generated prompts
     - _Requirements: 11.1-11.6_
 
-  - [ ]* 11.3 Write unit tests for prompt construction
+  - [x]* 11.3 Write unit tests for prompt construction
     - Test prompt includes all required sections
     - Test prompt formatting with various inputs
     - Test handling of empty context or missing elements
