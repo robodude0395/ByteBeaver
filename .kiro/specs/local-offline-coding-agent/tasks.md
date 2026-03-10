@@ -146,7 +146,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - _Requirements: 5.1-5.6_
 
 - [ ] 9. Create tool system coordinator
-  - [-] 9.1 Create tools/base.py with ToolSystem class
+  - [x] 9.1 Create tools/base.py with ToolSystem class
     - Implement __init__ method accepting workspace_path and config
     - Initialize FilesystemTools instance
     - Implement method to register and invoke tools by name
@@ -160,7 +160,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - _Requirements: 4.4_
 
 - [ ] 10. Implement basic executor with file operations
-  - [~] 10.1 Create agent/executor.py with Executor class
+  - [x] 10.1 Create agent/executor.py with Executor class
     - Implement __init__ method accepting llm_client, tool_system, context_engine (optional for now)
     - Implement execute_task() method that calls LLM and parses responses
     - Implement parse_llm_response() method to extract WRITE_FILE, PATCH_FILE directives
@@ -184,7 +184,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - _Requirements: 4.3, 4.4, 12.1, 12.2, 12.4, 12.5, 12.6_
 
 - [ ] 11. Implement structured prompt construction
-  - [~] 11.1 Create agent/prompts.py with prompt template functions
+  - [x] 11.1 Create agent/prompts.py with prompt template functions
     - Implement build_execution_prompt() function accepting task, context, tools, workspace_tree
     - Include user goal, current plan, task description in prompt
     - Include relevant file contents from context
@@ -206,14 +206,14 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - _Requirements: 11.1-11.6_
 
 - [ ] 12. Integrate executor with API endpoints
-  - [~] 12.1 Update server/api.py to use Executor
+  - [x] 12.1 Update server/api.py to use Executor
     - Modify POST /agent/prompt to create simple single-task plan and execute
     - Call executor.execute_task() with task
     - Store FileChange objects in session state
     - Return pending changes in response
     - _Requirements: 2.1, 4.1, 4.3_
 
-  - [~] 12.2 Implement change application logic
+  - [x] 12.2 Implement change application logic
     - Update POST /agent/apply_changes to write files using tool system
     - Mark changes as applied in session state
     - Handle errors during file writes

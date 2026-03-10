@@ -6,25 +6,8 @@ This module provides a unified interface for registering and invoking tools
 """
 
 from typing import Dict, Any, Callable, Optional
-from dataclasses import dataclass
 from tools.filesystem import FilesystemTools
-
-
-@dataclass
-class ToolCall:
-    """
-    Represents a tool invocation for tracking and debugging.
-
-    Attributes:
-        tool_name: Name of the tool being invoked
-        arguments: Dictionary of arguments passed to the tool
-        result: Result returned by the tool (None if not yet executed)
-        error: Error message if tool execution failed (None if successful)
-    """
-    tool_name: str
-    arguments: Dict[str, Any]
-    result: Optional[Any] = None
-    error: Optional[str] = None
+from agent.models import ToolCall
 
 
 class ToolSystem:
