@@ -52,3 +52,96 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Python
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Python build artifacts
+
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# Python virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging
+
+pip-wheel-metadata/
+
+# Python testing
+
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Python type checking
+
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Environment & Secrets
+.env
+.env.*
+*.env
+*.secret
+*.secrets
+*.key
+*.pem
+*.p12
+*.crt
+
+# local config overrides
+
+config.local.*
+settings.local.*
+
+# Terraform
+
+.terraform/
+
+# Terraform state files (VERY SENSITIVE)
+
+*.tfstate
+*.tfstate.*
+
+# Terraform crash logs
+
+crash.log
+
+# Terraform plan outputs
+
+*.tfplan
+*.tfplan.*
+
+# Local Terraform variable files
+
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Override files
+
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Lock file
+.terraform.lock.hcl

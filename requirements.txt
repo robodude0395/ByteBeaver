@@ -27,7 +27,7 @@ pylint==3.0.3
 mypy==1.8.0
 
 # Vector database and embeddings (for Phase 3)
-qdrant-client==1.7.0
+qdrant-client==1.17.0
 sentence-transformers==2.3.1
 
 # Web scraping (for Phase 5)
@@ -36,4 +36,4 @@ beautifulsoup4==4.12.3
 lxml==5.1.0
 
 # Utilities
-tiktoken==0.5.2
+tiktoken

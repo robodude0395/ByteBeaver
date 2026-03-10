@@ -6,6 +6,7 @@ from typing import Optional, List, Dict
 import uuid
 from datetime import datetime
 import logging
+import os
 
 from agent.models import (
     AgentSession, SessionStatus, FileChange, ChangeType,
@@ -14,6 +15,8 @@ from agent.models import (
 from agent.executor import Executor
 from llm.client import LLMClient
 from tools.base import ToolSystem
+from context.indexer import ContextEngine
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -33,29 +36,75 @@ sessions: Dict[str, AgentSession] = {}
 
 # Global instances (will be initialized on startup)
 llm_client: Optional[LLMClient] = None
-executor: Optional[Executor] = None
+context_engine: Optional[ContextEngine] = None
+config: Optional[Config] = None
+
+# Track indexed workspaces to avoid re-indexing
+indexed_workspaces: set = set()
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize LLM client and executor on startup."""
-    global llm_client, executor
+    """Initialize LLM client and context engine on startup."""
+    global llm_client, context_engine, config
 
-    # TODO: Load from config.yaml in future
-    # For now, use hardcoded defaults
-    llm_base_url = "http://localhost:8001/v1"
-    llm_model = "qwen2.5-coder-7b-instruct"
+    # Load configuration
+    config_path = os.environ.get("AGENT_CONFIG_PATH", "config.yaml")
+
+    try:
+        # Try to load config file
+        if os.path.exists(config_path):
+            config = Config.load(config_path)
+            logger.info(f"Loaded configuration from {config_path}")
+        else:
+            logger.warning(f"Config file not found: {config_path}, using defaults")
+            # Use hardcoded defaults if config file doesn't exist
+            config = None
+    except Exception as e:
+        logger.error(f"Failed to load configuration: {e}")
+        config = None
+
+    # Initialize LLM client
+    if config:
+        llm_base_url = config.llm.base_url
+        llm_model = config.llm.model
+        llm_max_tokens = config.llm.max_tokens
+    else:
+        # Fallback to hardcoded defaults
+        llm_base_url = os.environ.get("AGENT_LLM_BASE_URL", "http://localhost:8001/v1")
+        llm_model = "qwen2.5-coder-7b-instruct"
+        llm_max_tokens = 2048
 
     try:
         llm_client = LLMClient(
             base_url=llm_base_url,
             model=llm_model,
-            max_tokens=2048
+            max_tokens=llm_max_tokens
         )
         logger.info(f"Initialized LLM client: {llm_base_url}")
     except Exception as e:
         logger.error(f"Failed to initialize LLM client: {e}")
         # Continue without LLM client - will fail on first request
+
+    # Initialize ContextEngine if config is available
+    if config:
+        try:
+            context_engine = ContextEngine(
+                embedding_model_path=config.context.embedding_model_path,
+                vector_db_config={
+                    "host": config.context.vector_db.host,
+                    "port": config.context.vector_db.port,
+                    "in_memory": config.context.vector_db.in_memory,
+                    "collection_prefix": config.context.vector_db.collection_prefix
+                }
+            )
+            logger.info("Initialized ContextEngine")
+        except Exception as e:
+            logger.error(f"Failed to initialize ContextEngine: {e}")
+            context_engine = None
+    else:
+        logger.info("ContextEngine not initialized (no config file)")
+        context_engine = None
 
 
 # Request/Response models
@@ -143,7 +192,7 @@ async def process_prompt(request: PromptRequest):
     Returns:
         Response with session ID and plan
     """
-    global llm_client, executor
+    global llm_client, context_engine, config, indexed_workspaces
 
     # Check if LLM client is initialized
     if llm_client is None:
@@ -151,6 +200,30 @@ async def process_prompt(request: PromptRequest):
             status_code=503,
             detail="LLM client not initialized. Check server logs."
         )
+
+    # Index workspace on first request (lazy loading)
+    if context_engine and request.workspace_path not in indexed_workspaces:
+        try:
+            logger.info(f"Indexing workspace: {request.workspace_path}")
+
+            # Get file patterns from config or use defaults
+            file_patterns = None
+            exclude_patterns = None
+            if config:
+                file_patterns = config.context.file_patterns
+                exclude_patterns = config.context.exclude_patterns
+
+            context_engine.index_workspace(
+                workspace_path=request.workspace_path,
+                file_patterns=file_patterns,
+                exclude_patterns=exclude_patterns
+            )
+
+            indexed_workspaces.add(request.workspace_path)
+            logger.info(f"Workspace indexed successfully: {request.workspace_path}")
+        except Exception as e:
+            logger.error(f"Failed to index workspace: {e}")
+            # Continue without indexing - context_engine will be None for this request
 
     # Create or get session
     if request.session_id and request.session_id in sessions:
@@ -186,11 +259,11 @@ async def process_prompt(request: PromptRequest):
         # Initialize tool system for this workspace
         tool_system = ToolSystem(workspace_path=request.workspace_path)
 
-        # Initialize executor (without context engine for Phase 2)
+        # Initialize executor with context engine
         executor = Executor(
             llm_client=llm_client,
             tool_system=tool_system,
-            context_engine=None
+            context_engine=context_engine  # Pass context engine to executor
         )
 
         # Execute the task

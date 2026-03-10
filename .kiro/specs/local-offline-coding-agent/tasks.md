@@ -229,8 +229,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
 
 ### Phase 3: Repository Indexing and Semantic Search
 
-- [ ] 14. Set up embedding model and vector database
-  - [ ] 14.1 Install and configure Qdrant vector database
+- [x] 14. Set up embedding model and vector database
+  - [x] 14.1 Install and configure Qdrant vector database
     - Add qdrant-client to requirements.txt
     - Create context/vector_db.py with VectorDB wrapper class
     - Implement connection to Qdrant (in-memory mode for development)
@@ -239,7 +239,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Implement search() method for similarity search with score threshold
     - _Requirements: 7.4, 8.1, 8.2_
 
-  - [ ] 14.2 Set up embedding model (bge-small-en-v1.5)
+  - [x] 14.2 Set up embedding model (bge-small-en-v1.5)
     - Add sentence-transformers to requirements.txt
     - Create context/embeddings.py with EmbeddingModel class
     - Implement __init__ to load model from local path
@@ -247,14 +247,14 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add normalization for cosine similarity
     - _Requirements: 7.3_
 
-  - [ ]* 14.3 Write unit tests for vector database operations
+  - [x]* 14.3 Write unit tests for vector database operations
     - Test collection creation
     - Test embedding storage and retrieval
     - Test similarity search with various thresholds
     - _Requirements: 7.4, 8.1, 8.2_
 
-- [ ] 15. Implement file chunking system
-  - [ ] 15.1 Create context/chunker.py with file chunking logic
+- [x] 15. Implement file chunking system
+  - [x] 15.1 Create context/chunker.py with file chunking logic
     - Implement chunk_file() function accepting file path and content
     - Split files into 512-token chunks with 50-token overlap
     - Create FileChunk dataclass with file_path, chunk_id, line_start, line_end, content, embedding
@@ -262,21 +262,21 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Handle edge cases (empty files, very small files)
     - _Requirements: 7.2_
 
-  - [ ]* 15.2 Write property test for chunk size constraint
+  - [x]* 15.2 Write property test for chunk size constraint
     - **Property 10: Chunk Size Constraint**
     - **Validates: Requirements 7.2**
     - Test that all generated chunks have ≤512 tokens
     - _Requirements: 7.2_
 
-  - [ ]* 15.3 Write unit tests for file chunking
+  - [x]* 15.3 Write unit tests for file chunking
     - Test chunking of various file sizes
     - Test overlap between chunks
     - Test line number tracking
     - Test handling of edge cases
     - _Requirements: 7.2_
 
-- [ ] 16. Implement repository indexing
-  - [ ] 16.1 Create context/indexer.py with ContextEngine class
+- [x] 16. Implement repository indexing
+  - [x] 16.1 Create context/indexer.py with ContextEngine class
     - Implement __init__ accepting embedding_model_path and vector_db_config
     - Initialize EmbeddingModel and VectorDB instances
     - Implement index_workspace() method to discover and index files
@@ -306,8 +306,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test metadata storage
     - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 17. Implement semantic search
-  - [ ] 17.1 Add search() method to ContextEngine
+- [x] 17. Implement semantic search
+  - [x] 17.1 Add search() method to ContextEngine
     - Accept query string, top_k (default 10), min_score (default 0.7)
     - Generate query embedding using embedding model
     - Search vector database with score threshold
@@ -316,25 +316,25 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Return max 10 results
     - _Requirements: 8.1, 8.2, 8.3_
 
-  - [ ] 17.2 Add get_file_tree() method to ContextEngine
+  - [x] 17.2 Add get_file_tree() method to ContextEngine
     - Walk workspace directory structure
     - Build hierarchical dictionary representation
     - Exclude hidden files and configured exclude patterns
     - _Requirements: 11.5_
 
-  - [ ]* 17.3 Write property test for search result filtering
+  - [x]* 17.3 Write property test for search result filtering
     - **Property 13: Search Result Filtering**
     - **Validates: Requirements 8.2**
     - Test that all results have similarity_score ≥ 0.7 and count ≤ 10
     - _Requirements: 8.2_
 
-  - [ ]* 17.4 Write property test for search result structure
+  - [x]* 17.4 Write property test for search result structure
     - **Property 14: Search Result Structure**
     - **Validates: Requirements 8.3**
     - Test that all results have required fields (file_path, line_start, line_end, content, similarity_score)
     - _Requirements: 8.3_
 
-  - [ ]* 17.5 Write unit tests for semantic search
+  - [x]* 17.5 Write unit tests for semantic search
     - Test search with various queries
     - Test score threshold filtering
     - Test top_k limiting
@@ -342,48 +342,48 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test empty result handling
     - _Requirements: 8.1, 8.2, 8.3_
 
-- [ ] 18. Implement embedding cache
-  - [ ] 18.1 Create context/cache.py with EmbeddingCache class
+- [x] 18. Implement embedding cache
+  - [x] 18.1 Create context/cache.py with EmbeddingCache class
     - Implement cache using file hash as key
     - Store (hash, embedding) tuples in memory
     - Implement get_or_compute() method to check cache before generating embeddings
     - Add cache persistence to disk (optional)
     - _Requirements: 15.4_
 
-  - [ ]* 18.2 Write property test for embedding cache effectiveness
+  - [x]* 18.2 Write property test for embedding cache effectiveness
     - **Property 23: Embedding Cache Effectiveness**
     - **Validates: Requirements 15.4**
     - Test that unchanged files use cached embeddings (no model invocation)
     - _Requirements: 15.4_
 
-  - [ ]* 18.3 Write unit tests for embedding cache
+  - [x]* 18.3 Write unit tests for embedding cache
     - Test cache hit for unchanged files
     - Test cache miss for new/modified files
     - Test cache invalidation on content change
     - _Requirements: 15.4_
 
-- [ ] 19. Integrate context engine with executor
-  - [ ] 19.1 Update Executor to use ContextEngine
+- [x] 19. Integrate context engine with executor
+  - [x] 19.1 Update Executor to use ContextEngine
     - Pass context_engine to Executor.__init__
     - In execute_task(), call context_engine.search() with task description
     - Pass search results to prompt construction
     - Include file tree from context_engine.get_file_tree()
     - _Requirements: 4.2, 8.1, 11.4, 11.5_
 
-  - [ ] 19.2 Update API to initialize context engine on startup
+  - [x] 19.2 Update API to initialize context engine on startup
     - Add startup event handler to FastAPI app
     - Initialize ContextEngine with config
     - Index workspace on first request (lazy loading)
     - Pass context_engine to Executor
     - _Requirements: 7.1, 8.1_
 
-  - [ ]* 19.3 Write integration tests for context-aware execution
+  - [x]* 19.3 Write integration tests for context-aware execution
     - Test that executor retrieves relevant context for tasks
     - Test that context is included in LLM prompts
     - Test end-to-end: index → search → execute
     - _Requirements: 4.2, 8.1, 11.4_
 
-- [ ] 20. Checkpoint - Context-aware agent working
+- [x] 20. Checkpoint - Context-aware agent working
   - Ensure workspace indexing completes successfully
   - Ensure semantic search returns relevant results
   - Ensure executor includes context in prompts

@@ -71,7 +71,7 @@ class Executor:
         logger.info(f"Executing task {task.task_id}: {task.description}")
 
         # Retrieve context if context engine is available
-        context = self._retrieve_context(task) if self.context_engine else []
+        context = self._retrieve_context(task, workspace_path) if self.context_engine else []
 
         # Build prompt for LLM
         prompt = self._build_prompt(task, context, user_goal, workspace_path)
@@ -271,12 +271,13 @@ class Executor:
             diff=diff_content
         )
 
-    def _retrieve_context(self, task: Task) -> List[Dict[str, Any]]:
+    def _retrieve_context(self, task: Task, workspace_path: str) -> List[Dict[str, Any]]:
         """
         Retrieve relevant context for task from context engine.
 
         Args:
             task: Task to retrieve context for
+            workspace_path: Root directory for workspace
 
         Returns:
             List of context items (file chunks)
@@ -286,7 +287,12 @@ class Executor:
 
         try:
             # Search for relevant files using task description
-            results = self.context_engine.search(task.description, top_k=10, min_score=0.7)
+            results = self.context_engine.search(
+                query=task.description,
+                workspace_path=workspace_path,
+                top_k=10,
+                min_score=0.7
+            )
             return [
                 {
                     "file_path": r.file_path,
