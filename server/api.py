@@ -402,6 +402,55 @@ async def process_prompt(request: PromptRequest):
                 intent=intent.value,
             )
 
+        # --- Explore path: answer with semantic search context ---
+        if intent == Intent.EXPLORE:
+            workspace_context_str = None
+            code_context = None
+            if context_engine:
+                try:
+                    workspace_context_str = context_engine.get_file_tree(request.workspace_path)
+                except Exception as e:
+                    logger.warning(f"Failed to get file tree for explore: {e}")
+                try:
+                    search_results = context_engine.search(
+                        query=request.prompt,
+                        workspace_path=request.workspace_path,
+                        top_k=5,
+                        min_score=0.3,
+                    )
+                    code_context = [
+                        {
+                            "file_path": r.file_path,
+                            "line_start": r.line_start,
+                            "line_end": r.line_end,
+                            "content": r.content,
+                            "similarity_score": r.similarity_score,
+                        }
+                        for r in search_results
+                    ]
+                except Exception as e:
+                    logger.warning(f"Semantic search failed for explore: {e}")
+
+            handler = ConversationHandler(llm_client=llm_client)
+            chat_response = handler.respond(
+                message=request.prompt,
+                conversation_history=session.conversation_history,
+                workspace_context=workspace_context_str,
+                code_context=code_context,
+            )
+
+            session.add_message("user", request.prompt)
+            session.add_message("assistant", chat_response)
+            session.status = SessionStatus.COMPLETED
+            session.updated_at = datetime.now()
+
+            return PromptResponse(
+                session_id=session.session_id,
+                status=session.status.value,
+                chat_response=chat_response,
+                intent=intent.value,
+            )
+
         # --- Code task path: plan and execute ---
         session.add_message("user", request.prompt)
 
@@ -576,6 +625,57 @@ async def process_prompt_stream(request: PromptRequest):
                 session.updated_at = datetime.now()
 
                 yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id, 'intent': 'chat'})}\n\n"
+                return
+
+            # --- Explore path: stream response with semantic search context ---
+            if intent == Intent.EXPLORE:
+                workspace_context_str = None
+                code_context = None
+                if context_engine:
+                    try:
+                        workspace_context_str = context_engine.get_file_tree(request.workspace_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to get file tree for explore: {e}")
+                    try:
+                        search_results = context_engine.search(
+                            query=request.prompt,
+                            workspace_path=request.workspace_path,
+                            top_k=5,
+                            min_score=0.3,
+                        )
+                        code_context = [
+                            {
+                                "file_path": r.file_path,
+                                "line_start": r.line_start,
+                                "line_end": r.line_end,
+                                "content": r.content,
+                                "similarity_score": r.similarity_score,
+                            }
+                            for r in search_results
+                        ]
+                    except Exception as e:
+                        logger.warning(f"Semantic search failed for explore: {e}")
+
+                handler = ConversationHandler(llm_client=llm_client)
+                full_response = ""
+
+                for token in handler.respond_streaming(
+                    message=request.prompt,
+                    conversation_history=session.conversation_history,
+                    workspace_context=workspace_context_str,
+                    code_context=code_context,
+                ):
+                    if token is None:
+                        continue
+                    full_response += token
+                    yield f"event: chat_token\ndata: {json.dumps({'token': token})}\n\n"
+
+                session.add_message("user", request.prompt)
+                session.add_message("assistant", full_response)
+                session.status = SessionStatus.COMPLETED
+                session.updated_at = datetime.now()
+
+                yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id, 'intent': 'explore'})}\n\n"
                 return
 
             # --- Code task path: plan and execute with streaming ---
