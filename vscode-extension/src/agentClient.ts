@@ -39,6 +39,8 @@ export interface PromptResponse {
     session_id: string;
     plan?: PlanInfo;
     status: string;
+    chat_response?: string;
+    intent?: string;
 }
 
 export interface FileChangeInfo {

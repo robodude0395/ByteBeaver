@@ -16,6 +16,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri;
     private readonly agentClient: AgentClient;
     private onPendingChangesCallback?: (sessionId: string, changes: FileChangeInfo[]) => void;
+    private currentIntent?: string;
 
     constructor(extensionUri: vscode.Uri, agentClient: AgentClient) {
         this.extensionUri = extensionUri;
@@ -68,6 +69,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
                 // Start a streaming agent message for real-time token display
                 this.postMessageToWebview({ type: 'startStreamingMessage' });
+                this.currentIntent = undefined;
 
                 await this.agentClient.sendPromptStreaming(
                     text,
@@ -76,6 +78,16 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                         switch (evt.event) {
                             case 'session':
                                 this.sessionId = evt.data.session_id;
+                                break;
+                            case 'intent':
+                                this.currentIntent = evt.data.intent;
+                                break;
+                            case 'chat_token':
+                                this.setTyping(false);
+                                this.postMessageToWebview({
+                                    type: 'streamToken',
+                                    token: evt.data.token,
+                                });
                                 break;
                             case 'plan':
                                 this.setTyping(false);
@@ -97,10 +109,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                 break;
                             case 'done':
                                 this.postMessageToWebview({ type: 'endStreamingMessage' });
-                                this.addMessage('agent', 'Task execution completed.');
-                                // Fetch final status to get pending changes
-                                if (this.sessionId) {
-                                    this.startStatusPolling(this.sessionId);
+                                if (this.currentIntent !== 'chat') {
+                                    this.addMessage('agent', 'Task execution completed.');
+                                    // Fetch final status to get pending changes
+                                    if (this.sessionId) {
+                                        this.startStatusPolling(this.sessionId);
+                                    }
                                 }
                                 break;
                             case 'error':
