@@ -18,9 +18,14 @@ local-offline-coding-agent/
 
 ## Module Responsibilities
 
-- `agent/models.py`: Core data models (Task, Plan, Session, FileChange, enums)
+- `agent/agent_loop.py`: Unified ReAct agent loop — LLM decides tools vs. conversation
+- `agent/models.py`: Core data models (Session, FileChange, ToolCall, ExecutionResult, enums)
 - `llm/client.py`: LLM communication with streaming support
 - `server/api.py`: FastAPI endpoints for VSCode extension integration
+- `server/validation.py`: Input validation, path sanitisation, rate limiting
+- `utils/logging.py`: Centralised logging setup with rotation
+- `utils/tokens.py`: Token counting and context budget helpers
+- `utils/metrics.py`: In-memory request metrics
 - `config.py`: Configuration management with YAML and env var support
 
 ## Key Patterns
@@ -43,14 +48,14 @@ The project follows a phased approach:
 - Phase 1: Basic infrastructure (complete)
 - Phase 2: Filesystem tools and multi-file edits (complete)
 - Phase 3: Repository indexing and semantic search (complete)
-- Phase 4: Planner system and task execution loop (complete)
+- Phase 4: Planner system and task execution loop (complete — later replaced in Phase 7)
 - Phase 5: Web tool and terminal tool (complete)
 - Phase 6: VSCode extension integration (complete — MVP)
 - Phase 7: Conversational UX and agent personality (in progress)
 
-Phases 1–6 form the working MVP. Phase 7 focuses on making the agent feel like a
-knowledgeable, conversational coding partner rather than a blind task executor.
-This includes intent classification (chat vs. code task), natural conversation
-handling, personality/tone, and context-aware responses.
+Phase 7 replaced the planner→executor pipeline and keyword-based intent classifier
+with a unified ReAct agent loop (`agent/agent_loop.py`). The LLM now sees available
+tools in its system prompt and decides autonomously whether to call them or respond
+conversationally — no upfront routing or separate code paths.
 
 When adding features, consider which phase they belong to and maintain backward compatibility.

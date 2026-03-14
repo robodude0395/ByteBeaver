@@ -23,10 +23,7 @@ from agent.models import (
     AgentSession, SessionStatus, FileChange, ChangeType,
     Task, Plan, ExecutionResult, TaskComplexity, TaskStatus
 )
-from agent.executor import Executor
-from agent.planner import Planner
-from agent.intent import IntentClassifier, Intent
-from agent.conversation import ConversationHandler
+from agent.agent_loop import AgentLoop
 from llm.client import LLMClient
 from tools.base import ToolSystem
 from context.indexer import ContextEngine
@@ -307,17 +304,17 @@ async def get_metrics():
 
 @app.post("/agent/prompt", response_model=PromptResponse)
 async def process_prompt(request: PromptRequest):
-    """Process user prompt — routes to chat or planner based on intent.
+    """Process user prompt using the unified agent loop.
 
-    First classifies the user's message. If it's casual conversation,
-    responds directly via the ConversationHandler. If it's a coding task,
-    uses the Planner to generate a structured plan and executes it.
+    The LLM decides whether to use tools or respond conversationally.
+    No upfront intent classification — the model sees its available tools
+    and chooses the right action (ReAct pattern).
 
     Args:
         request: Prompt request with user input
 
     Returns:
-        Response with session ID, and either a chat_response or a plan
+        Response with session ID, chat_response, and optional file changes
     """
     global llm_client, context_engine, config, indexed_workspaces
 
@@ -367,158 +364,43 @@ async def process_prompt(request: PromptRequest):
         sessions[session_id] = session
 
     try:
-        # --- Phase 7: Intent Classification ---
-        classifier = IntentClassifier(llm_client=llm_client)
-        intent = classifier.classify(request.prompt)
-        logger.info(f"Intent classified: {intent.value} for session {session.session_id}")
-
-        # --- Chat path: respond conversationally ---
-        if intent == Intent.CHAT:
-            # Get workspace context for informed answers
-            workspace_context_str = None
-            if context_engine:
-                try:
-                    workspace_context_str = context_engine.get_file_tree(request.workspace_path)
-                except Exception as e:
-                    logger.warning(f"Failed to get file tree for chat: {e}")
-
-            handler = ConversationHandler(llm_client=llm_client)
-            chat_response = handler.respond(
-                message=request.prompt,
-                conversation_history=session.conversation_history,
-                workspace_context=workspace_context_str,
-            )
-
-            # Store messages in session history
-            session.add_message("user", request.prompt)
-            session.add_message("assistant", chat_response)
-            session.status = SessionStatus.COMPLETED
-            session.updated_at = datetime.now()
-
-            return PromptResponse(
-                session_id=session.session_id,
-                status=session.status.value,
-                chat_response=chat_response,
-                intent=intent.value,
-            )
-
-        # --- Explore path: answer with semantic search context ---
-        if intent == Intent.EXPLORE:
-            workspace_context_str = None
-            code_context = None
-            if context_engine:
-                try:
-                    workspace_context_str = context_engine.get_file_tree(request.workspace_path)
-                except Exception as e:
-                    logger.warning(f"Failed to get file tree for explore: {e}")
-                try:
-                    search_results = context_engine.search(
-                        query=request.prompt,
-                        workspace_path=request.workspace_path,
-                        top_k=5,
-                        min_score=0.3,
-                    )
-                    code_context = [
-                        {
-                            "file_path": r.file_path,
-                            "line_start": r.line_start,
-                            "line_end": r.line_end,
-                            "content": r.content,
-                            "similarity_score": r.similarity_score,
-                        }
-                        for r in search_results
-                    ]
-                except Exception as e:
-                    logger.warning(f"Semantic search failed for explore: {e}")
-
-            handler = ConversationHandler(llm_client=llm_client)
-            chat_response = handler.respond(
-                message=request.prompt,
-                conversation_history=session.conversation_history,
-                workspace_context=workspace_context_str,
-                code_context=code_context,
-            )
-
-            session.add_message("user", request.prompt)
-            session.add_message("assistant", chat_response)
-            session.status = SessionStatus.COMPLETED
-            session.updated_at = datetime.now()
-
-            return PromptResponse(
-                session_id=session.session_id,
-                status=session.status.value,
-                chat_response=chat_response,
-                intent=intent.value,
-            )
-
-        # --- Code task path: plan and execute ---
-        session.add_message("user", request.prompt)
-
-        planner = Planner(llm_client=llm_client)
-
-        workspace_context = {}
-        if context_engine:
-            try:
-                file_tree = context_engine.get_file_tree(request.workspace_path)
-                workspace_context["file_tree"] = file_tree
-            except Exception as e:
-                logger.warning(f"Failed to get file tree: {e}")
-
-        logger.info(f"Generating plan for session {session.session_id}")
-        plan = planner.generate_plan(
-            prompt=request.prompt,
-            workspace_context=workspace_context if workspace_context else None
-        )
-
-        session.plan = plan
-        session.status = SessionStatus.EXECUTING
-        session.updated_at = datetime.now()
-
+        # --- Unified Agent Loop (ReAct pattern) ---
         tool_system = ToolSystem(workspace_path=request.workspace_path)
-
-        executor = Executor(
+        agent = AgentLoop(
             llm_client=llm_client,
             tool_system=tool_system,
-            context_engine=context_engine
-        )
-
-        logger.info(f"Executing plan for session {session.session_id}")
-        execution_result = executor.execute_plan(
-            plan=plan,
+            context_engine=context_engine,
             workspace_path=request.workspace_path,
-            user_goal=request.prompt
         )
 
-        session.execution_result = execution_result
+        result = agent.run(
+            message=request.prompt,
+            conversation_history=session.conversation_history,
+        )
 
-        if execution_result.status == "completed":
-            session.status = SessionStatus.COMPLETED
-        elif execution_result.status == "partial":
-            session.status = SessionStatus.COMPLETED
-        else:
-            session.status = SessionStatus.ERROR
-            if execution_result.failed_tasks:
-                session.error = f"Failed tasks: {', '.join(execution_result.failed_tasks)}"
+        # Store messages in session history
+        session.add_message("user", request.prompt)
+        session.add_message("assistant", result["response"])
 
+        # Store file changes in execution_result so status/apply endpoints work
+        file_changes = result.get("file_changes", [])
+        if file_changes:
+            session.execution_result = ExecutionResult(
+                plan_id="agent_loop",
+                status="completed",
+                completed_tasks=["agent_loop"],
+                failed_tasks=[],
+                all_changes=file_changes,
+            )
+
+        session.status = SessionStatus.COMPLETED
         session.updated_at = datetime.now()
-
-        plan_info = PlanInfo(
-            tasks=[
-                TaskInfo(
-                    task_id=task.task_id,
-                    description=task.description,
-                    dependencies=task.dependencies,
-                    estimated_complexity=task.estimated_complexity.value
-                )
-                for task in plan.tasks
-            ]
-        )
 
         return PromptResponse(
             session_id=session.session_id,
-            plan=plan_info,
             status=session.status.value,
-            intent=intent.value,
+            chat_response=result["response"],
+            intent="agent",
         )
 
     except Exception as e:
@@ -534,12 +416,13 @@ async def process_prompt(request: PromptRequest):
 
 @app.post("/agent/prompt/stream")
 async def process_prompt_stream(request: PromptRequest):
-    """Stream LLM tokens as Server-Sent Events during prompt execution.
+    """Stream agent responses as Server-Sent Events.
 
-    Classifies intent first. For chat messages, streams a conversational
-    response. For code tasks, generates a plan and streams task execution.
+    Uses the unified agent loop (ReAct pattern). The LLM decides whether
+    to use tools or respond directly. Tool usage is streamed as thinking
+    events, and the final answer is streamed token by token.
 
-    Events: session, intent, chat_token, plan, token, task_result, done, error.
+    Events: session, thinking, tool_result, chat_token, file_change, done, error.
 
     Args:
         request: Prompt request with user input
@@ -592,171 +475,41 @@ async def process_prompt_stream(request: PromptRequest):
         yield f"event: session\ndata: {json.dumps({'session_id': session_id})}\n\n"
 
         try:
-            # --- Phase 7: Intent Classification ---
-            classifier = IntentClassifier(llm_client=llm_client)
-            intent = classifier.classify(request.prompt)
-            yield f"event: intent\ndata: {json.dumps({'intent': intent.value})}\n\n"
-
-            # --- Chat path: stream conversational response ---
-            if intent == Intent.CHAT:
-                workspace_context_str = None
-                if context_engine:
-                    try:
-                        workspace_context_str = context_engine.get_file_tree(request.workspace_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to get file tree for chat: {e}")
-
-                handler = ConversationHandler(llm_client=llm_client)
-                full_response = ""
-
-                for token in handler.respond_streaming(
-                    message=request.prompt,
-                    conversation_history=session.conversation_history,
-                    workspace_context=workspace_context_str,
-                ):
-                    if token is None:
-                        continue
-                    full_response += token
-                    yield f"event: chat_token\ndata: {json.dumps({'token': token})}\n\n"
-
-                session.add_message("user", request.prompt)
-                session.add_message("assistant", full_response)
-                session.status = SessionStatus.COMPLETED
-                session.updated_at = datetime.now()
-
-                yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id, 'intent': 'chat'})}\n\n"
-                return
-
-            # --- Explore path: stream response with semantic search context ---
-            if intent == Intent.EXPLORE:
-                workspace_context_str = None
-                code_context = None
-                if context_engine:
-                    try:
-                        workspace_context_str = context_engine.get_file_tree(request.workspace_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to get file tree for explore: {e}")
-                    try:
-                        search_results = context_engine.search(
-                            query=request.prompt,
-                            workspace_path=request.workspace_path,
-                            top_k=5,
-                            min_score=0.3,
-                        )
-                        code_context = [
-                            {
-                                "file_path": r.file_path,
-                                "line_start": r.line_start,
-                                "line_end": r.line_end,
-                                "content": r.content,
-                                "similarity_score": r.similarity_score,
-                            }
-                            for r in search_results
-                        ]
-                    except Exception as e:
-                        logger.warning(f"Semantic search failed for explore: {e}")
-
-                handler = ConversationHandler(llm_client=llm_client)
-                full_response = ""
-
-                for token in handler.respond_streaming(
-                    message=request.prompt,
-                    conversation_history=session.conversation_history,
-                    workspace_context=workspace_context_str,
-                    code_context=code_context,
-                ):
-                    if token is None:
-                        continue
-                    full_response += token
-                    yield f"event: chat_token\ndata: {json.dumps({'token': token})}\n\n"
-
-                session.add_message("user", request.prompt)
-                session.add_message("assistant", full_response)
-                session.status = SessionStatus.COMPLETED
-                session.updated_at = datetime.now()
-
-                yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id, 'intent': 'explore'})}\n\n"
-                return
-
-            # --- Code task path: plan and execute with streaming ---
-            session.add_message("user", request.prompt)
-
-            planner = Planner(llm_client=llm_client)
-            workspace_context = {}
-            if context_engine:
-                try:
-                    file_tree = context_engine.get_file_tree(request.workspace_path)
-                    workspace_context["file_tree"] = file_tree
-                except Exception as e:
-                    logger.warning(f"Failed to get file tree: {e}")
-
-            plan = planner.generate_plan(
-                prompt=request.prompt,
-                workspace_context=workspace_context if workspace_context else None
-            )
-            session.plan = plan
-            session.status = SessionStatus.EXECUTING
-            session.updated_at = datetime.now()
-
-            plan_data = {
-                "tasks": [
-                    {
-                        "task_id": t.task_id,
-                        "description": t.description,
-                        "dependencies": t.dependencies,
-                        "estimated_complexity": t.estimated_complexity.value,
-                    }
-                    for t in plan.tasks
-                ]
-            }
-            yield f"event: plan\ndata: {json.dumps(plan_data)}\n\n"
-
-            # Execute tasks with streaming
+            # --- Unified Agent Loop (ReAct pattern) ---
             tool_system = ToolSystem(workspace_path=request.workspace_path)
-            executor = Executor(
+            agent = AgentLoop(
                 llm_client=llm_client,
                 tool_system=tool_system,
-                context_engine=context_engine
+                context_engine=context_engine,
+                workspace_path=request.workspace_path,
             )
 
-            all_changes = []
-            completed = []
-            failed = []
+            full_response = ""
 
-            while (task := plan.get_next_task()) is not None:
-                task.status = TaskStatus.IN_PROGRESS
+            for event in agent.run_streaming(
+                message=request.prompt,
+                conversation_history=session.conversation_history,
+            ):
+                if event["event"] == "thinking":
+                    yield f"event: thinking\ndata: {json.dumps({'message': event['data']})}\n\n"
+                elif event["event"] == "tool_result":
+                    yield f"event: tool_result\ndata: {json.dumps({'result': event['data']})}\n\n"
+                elif event["event"] == "token":
+                    full_response += event["data"]
+                    yield f"event: chat_token\ndata: {json.dumps({'token': event['data']})}\n\n"
+                elif event["event"] == "file_change":
+                    fc = event["data"]
+                    yield f"event: file_change\ndata: {json.dumps({'change_id': fc.change_id, 'file_path': fc.file_path, 'change_type': fc.change_type.value, 'diff': fc.diff})}\n\n"
+                elif event["event"] == "done":
+                    done_data = event["data"]
+                    full_response = done_data.get("response", full_response)
 
-                for evt in executor.execute_task_streaming(
-                    task, request.workspace_path, user_goal=request.prompt
-                ):
-                    if evt["event"] == "token":
-                        yield f"event: token\ndata: {json.dumps(evt['data'])}\n\n"
-                    elif evt["event"] == "result":
-                        task.status = TaskStatus.COMPLETED
-                        completed.append(task.task_id)
-                        task_result = evt.get("task_result")
-                        if task_result:
-                            all_changes.extend(task_result.changes)
-                        yield f"event: task_result\ndata: {json.dumps(evt['data'])}\n\n"
-                    elif evt["event"] == "error":
-                        task.status = TaskStatus.FAILED
-                        failed.append(task.task_id)
-                        yield f"event: task_error\ndata: {json.dumps({'task_id': task.task_id, 'error': evt['data']})}\n\n"
-
-            # Build final execution result
-            status = "completed" if not failed else "partial" if completed else "failed"
-            execution_result = ExecutionResult(
-                plan_id=plan.plan_id,
-                status=status,
-                completed_tasks=completed,
-                failed_tasks=failed,
-                all_changes=all_changes
-            )
-            session.execution_result = execution_result
-            session.status = SessionStatus.COMPLETED if status != "failed" else SessionStatus.ERROR
+            session.add_message("user", request.prompt)
+            session.add_message("assistant", full_response)
+            session.status = SessionStatus.COMPLETED
             session.updated_at = datetime.now()
 
-            yield f"event: done\ndata: {json.dumps({'status': status, 'session_id': session_id})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id})}\n\n"
 
         except Exception as e:
             logger.error(f"Streaming error: {e}", exc_info=True)
@@ -842,6 +595,10 @@ async def get_status(session_id: str):
         total_tasks = len(session.plan.tasks)
         done = len(completed_tasks) + len(failed_tasks)
         progress = done / total_tasks if total_tasks > 0 else 0.0
+    elif session.execution_result:
+        # Agent loop (no plan) — derive progress from execution_result
+        total = len(completed_tasks) + len(failed_tasks)
+        progress = 1.0 if total > 0 else 0.0
 
     return StatusResponse(
         session_id=session.session_id,

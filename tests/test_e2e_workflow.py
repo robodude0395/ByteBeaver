@@ -99,12 +99,12 @@ def _post_prompt(client, temp_workspace, mock_llm, prompt="Create a project"):
 
 
 class TestFullWorkflowPromptToApply:
-    """Test: User sends prompt → Agent generates plan → Executes → Apply changes."""
+    """Test: User sends prompt → Agent generates response with file changes → Apply changes."""
 
     def test_full_workflow_prompt_to_apply(self, client, temp_workspace):
         """POST /agent/prompt → GET /agent/status → POST /agent/apply_changes → verify files."""
         mock_llm = _mock_llm_with([
-            _single_task_plan(),
+            # Agent loop: first complete() call — LLM returns WRITE_FILE directly
             _write_file_response("hello.py", "print('hello world')"),
         ])
 
@@ -112,14 +112,12 @@ class TestFullWorkflowPromptToApply:
         assert resp.status_code == 200
         data = resp.json()
         session_id = data["session_id"]
-        assert data["plan"] is not None
-        assert len(data["plan"]["tasks"]) == 1
+        assert data["chat_response"] is not None
 
-        # GET status → verify progress and pending_changes
+        # GET status → verify pending_changes
         status_resp = client.get(f"/agent/status/{session_id}")
         assert status_resp.status_code == 200
         status = status_resp.json()
-        assert status["progress"] == 1.0
         assert len(status["pending_changes"]) >= 1
 
         # POST apply_changes with change_ids
@@ -147,7 +145,6 @@ class TestFullWorkflowPromptToReject:
     def test_full_workflow_prompt_to_reject(self, client, temp_workspace):
         """POST /agent/prompt → GET /agent/status → don't apply → files don't exist."""
         mock_llm = _mock_llm_with([
-            _single_task_plan(),
             _write_file_response("rejected.py", "should_not_exist = True"),
         ])
 
@@ -171,7 +168,6 @@ class TestAcceptChangesWritesFiles:
     def test_accept_changes_writes_files(self, client, temp_workspace):
         """Apply changes and verify response + actual files on disk."""
         mock_llm = _mock_llm_with([
-            _single_task_plan(),
             _write_file_response("output.py", "result = 42"),
         ])
 
@@ -204,12 +200,14 @@ class TestAcceptPartialChanges:
 
     def test_accept_partial_changes(self, client, temp_workspace):
         """Apply only first change_id, verify only that file exists."""
-        mock_llm = _mock_llm_with([
-            _multi_task_plan(),
-            _write_file_response("utils.py", "def helper(): pass"),
-            _write_file_response("main.py", "import utils"),
-            _write_file_response("tests.py", "def test(): pass"),
-        ])
+        # Agent loop: LLM returns multiple WRITE_FILE directives in one response
+        multi_write = (
+            "Here are the files:\n\n"
+            + _write_file_response("utils.py", "def helper(): pass") + "\n\n"
+            + _write_file_response("main.py", "import utils") + "\n\n"
+            + _write_file_response("tests.py", "def test(): pass")
+        )
+        mock_llm = _mock_llm_with([multi_write])
 
         resp = _post_prompt(client, temp_workspace, mock_llm)
         session_id = resp.json()["session_id"]
@@ -240,26 +238,25 @@ class TestAcceptPartialChanges:
 
 
 class TestMultiTaskProgressAndApply:
-    """Test: Multi-task plan execution with progress and apply all."""
+    """Test: Multi-file response with apply all."""
 
-    def test_multi_task_progress_and_apply(self, client, temp_workspace):
-        """Multi-task plan → verify progress=1.0 → apply all → verify all files."""
-        mock_llm = _mock_llm_with([
-            _multi_task_plan(),
-            _write_file_response("utils.py", "UTIL = True"),
-            _write_file_response("main.py", "MAIN = True"),
-            _write_file_response("tests.py", "TEST = True"),
-        ])
+    def test_multi_file_apply_all(self, client, temp_workspace):
+        """Multi-file response → apply all → verify all files."""
+        multi_write = (
+            "Creating all files:\n\n"
+            + _write_file_response("utils.py", "UTIL = True") + "\n\n"
+            + _write_file_response("main.py", "MAIN = True") + "\n\n"
+            + _write_file_response("tests.py", "TEST = True")
+        )
+        mock_llm = _mock_llm_with([multi_write])
 
         resp = _post_prompt(client, temp_workspace, mock_llm)
         assert resp.status_code == 200
         session_id = resp.json()["session_id"]
 
-        # GET status → verify progress=1.0, all tasks completed
+        # GET status → verify pending_changes
         status = client.get(f"/agent/status/{session_id}").json()
-        assert status["progress"] == 1.0
-        assert len(status["completed_tasks"]) == 3
-        assert status["pending_tasks"] == []
+        assert len(status["pending_changes"]) >= 3
 
         # Apply all changes
         change_ids = [c["change_id"] for c in status["pending_changes"]]
@@ -276,29 +273,17 @@ class TestMultiTaskProgressAndApply:
 
 
 class TestErrorRecoveryLLMFailure:
-    """Test: Error handling when LLM fails on a task."""
+    """Test: Error handling when LLM fails."""
 
     def test_error_recovery_llm_failure(self, client, temp_workspace):
-        """LLM fails on second task → response doesn't crash, partial changes available."""
+        """LLM raises ConnectionError → response returns 500."""
         mock_llm = _mock_llm_with([
-            _multi_task_plan(),
-            _write_file_response("utils.py", "def helper(): pass"),
             ConnectionError("LLM unreachable"),
-            _write_file_response("tests.py", "def test(): pass"),
         ])
 
         resp = _post_prompt(client, temp_workspace, mock_llm)
-        # Should not crash
-        assert resp.status_code == 200
-        session_id = resp.json()["session_id"]
-
-        # GET status → verify failed_tasks populated
-        status = client.get(f"/agent/status/{session_id}").json()
-        assert len(status["failed_tasks"]) >= 1
-
-        # Partial changes from successful tasks should still be available
-        # At least utils.py change should exist
-        assert len(status["pending_changes"]) >= 1
+        # Agent loop wraps the error
+        assert resp.status_code == 500
 
 
 class TestCancelSession:
@@ -307,7 +292,6 @@ class TestCancelSession:
     def test_cancel_session(self, client, temp_workspace):
         """POST /agent/prompt → POST /agent/cancel → GET /agent/status → cancelled."""
         mock_llm = _mock_llm_with([
-            _single_task_plan(),
             _write_file_response("file.py", "x = 1"),
         ])
 

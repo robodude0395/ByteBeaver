@@ -1,10 +1,9 @@
 """
-Integration tests for terminal and web tools with the tool system and executor.
+Integration tests for terminal and web tools with the tool system.
 
 Tests that:
 - ToolSystem registers and invokes run_command and web_search
-- Executor parses and executes TOOL_CALL directives for these tools
-- Tool results are captured in task results
+- Tool results are captured correctly
 """
 
 import os
@@ -18,8 +17,6 @@ import pytest
 from tools.base import ToolSystem
 from tools.terminal import CommandResult
 from tools.web import WebResult
-from agent.executor import Executor
-from agent.models import Task, ToolCall
 
 
 @pytest.fixture
@@ -41,14 +38,6 @@ def tool_system_with_web(temp_workspace):
     """Create ToolSystem with web search enabled."""
     config = {"web": {"web_search_enabled": True}}
     return ToolSystem(temp_workspace, config)
-
-
-@pytest.fixture
-def mock_llm_client():
-    """Create a mock LLM client."""
-    client = MagicMock()
-    client.complete.return_value = "No directives."
-    return client
 
 
 class TestToolSystemRegistration:
@@ -120,92 +109,3 @@ class TestWebSearchThroughToolSystem:
         tool_system.invoke_tool("web_search", query="test")
         assert len(tool_system.call_history) == 1
         assert tool_system.call_history[0].tool_name == "web_search"
-
-
-class TestExecutorToolCallParsing:
-    """Test that executor parses and executes TOOL_CALL directives for new tools."""
-
-    def test_parse_run_command_tool_call(self, mock_llm_client, tool_system):
-        executor = Executor(mock_llm_client, tool_system)
-        response = (
-            'TOOL_CALL: run_command\n'
-            '```json\n'
-            '{"command": "echo integration_test"}\n'
-            '```'
-        )
-        changes, tool_calls = executor.parse_llm_response(response)
-        assert len(tool_calls) == 1
-        assert tool_calls[0].tool_name == "run_command"
-        assert tool_calls[0].arguments == {"command": "echo integration_test"}
-
-    def test_parse_web_search_tool_call(self, mock_llm_client, tool_system):
-        executor = Executor(mock_llm_client, tool_system)
-        response = (
-            'TOOL_CALL: web_search\n'
-            '```json\n'
-            '{"query": "python requests library"}\n'
-            '```'
-        )
-        changes, tool_calls = executor.parse_llm_response(response)
-        assert len(tool_calls) == 1
-        assert tool_calls[0].tool_name == "web_search"
-        assert tool_calls[0].arguments == {"query": "python requests library"}
-
-
-class TestExecutorToolExecution:
-    """Test that executor executes run_command and web_search through tool system."""
-
-    def test_execute_run_command_through_executor(
-        self, mock_llm_client, tool_system
-    ):
-        executor = Executor(mock_llm_client, tool_system)
-        tool_call = ToolCall(
-            tool_name="run_command",
-            arguments={"command": "echo executor_test"},
-        )
-        executor._execute_tool_call(tool_call)
-        assert tool_call.error is None
-        assert isinstance(tool_call.result, CommandResult)
-        assert tool_call.result.exit_code == 0
-        assert "executor_test" in tool_call.result.stdout
-
-    def test_execute_web_search_through_executor(
-        self, mock_llm_client, tool_system
-    ):
-        """Web search disabled returns empty list, no error."""
-        executor = Executor(mock_llm_client, tool_system)
-        tool_call = ToolCall(
-            tool_name="web_search",
-            arguments={"query": "test query"},
-        )
-        executor._execute_tool_call(tool_call)
-        assert tool_call.error is None
-        assert tool_call.result == []
-
-    def test_tool_results_in_task_result(self, mock_llm_client, tool_system):
-        """Verify tool call results are included when executor processes a task."""
-        llm_response = (
-            'REASONING: Running a test command.\n\n'
-            'TOOL_CALL: run_command\n'
-            '```json\n'
-            '{"command": "echo task_result_test"}\n'
-            '```'
-        )
-        mock_llm_client.complete.return_value = llm_response
-        executor = Executor(mock_llm_client, tool_system)
-
-        task = Task(
-            task_id="t1",
-            description="Run a test command",
-            dependencies=[],
-            estimated_complexity="low",
-        )
-        result = executor.execute_task(task, tool_system.workspace_path)
-
-        # Find the run_command tool call in results
-        run_calls = [
-            tc for tc in result.tool_calls if tc.tool_name == "run_command"
-        ]
-        assert len(run_calls) == 1
-        assert run_calls[0].result.exit_code == 0
-        assert "task_result_test" in run_calls[0].result.stdout

@@ -9,17 +9,17 @@ Target hardware: NVIDIA RTX 3080 (10GB VRAM), 32GB RAM, 6+ core CPU.
 
 ## Architecture
 
-The system is a three-layer pipeline:
+The system uses a unified ReAct (Reasoning + Acting) agent loop:
 
-1. Planner — breaks a user prompt into a structured task list (JSON) via LLM
-2. Executor — processes each task by calling the LLM, parsing directives
-   (WRITE_FILE, PATCH_FILE, TOOL_CALL), and running them through the tool system
-3. Tool System — unified registry of filesystem, terminal, and web tools
+1. Agent Loop — the LLM sees available tools in its system prompt and decides
+   whether to use them or respond conversationally. No upfront intent
+   classification or separate code paths.
+2. Tool System — unified registry of filesystem, terminal, and web tools
+3. Context Engine — indexes the workspace into a vector DB (Qdrant) using
+   sentence-transformers embeddings, then provides semantic search so the LLM
+   receives relevant code snippets in its prompt
 
 Supporting subsystems:
-- Context Engine — indexes the workspace into a vector DB (Qdrant) using
-  sentence-transformers embeddings, then provides semantic search so the LLM
-  receives relevant code snippets in its prompt
 - SSE Streaming — tokens stream to the client in real time via Server-Sent Events
 - Review-before-apply — proposed file changes are returned as diffs; the client
   (VSCode extension) presents them for approval before writing to disk
@@ -30,25 +30,31 @@ A sidebar webview extension that connects to the agent server over HTTP. Support
 chat input, streaming responses, diff preview, and one-click apply/reject of
 proposed changes. Configurable server URL for remote-desktop setups.
 
-## Current State (MVP)
+## Current State
 
-All core infrastructure is functional: planning, execution, tool invocation,
-context-aware prompts, streaming, and the VSCode extension. The agent can receive
-a coding request, plan tasks, generate file changes, and present them for review.
+The agent uses a unified ReAct (Reasoning + Acting) loop where the LLM sees
+available tools and decides whether to call them or respond conversationally.
+There is no upfront intent classification — the model handles everything in a
+single code path. Core infrastructure is functional: the agent loop, tool
+invocation, context-aware prompts, SSE streaming, and the VSCode extension.
+The agent can receive a coding request or a conversational question, use tools
+to explore the workspace, generate file changes, and present them for review.
 
-## Next Direction — Conversational UX (Phase 7)
+## Phase 7 — Conversational UX (current)
 
-The MVP executes every prompt as a coding task. The next priority is making the
-agent feel like a knowledgeable, personable coding partner — closer to how Copilot
-Chat or ChatGPT behave. Key goals:
+Phase 7 replaced the old planner→executor pipeline and keyword-based intent
+classifier with the unified agent loop. Completed so far:
 
-- Intent classification: distinguish casual conversation ("hi", "what does this
-  function do?") from actionable coding requests ("add a retry to the HTTP client")
-- Natural conversation: greet the user, answer questions, explain code, and only
-  invoke the planner/executor when there's actual work to do
-- Personality and tone: the agent should sound like a helpful, opinionated senior
-  dev — concise, friendly, and confident
-- Context awareness: use the indexed workspace to answer questions about the
-  codebase without generating file changes
-- Conversation memory: maintain chat history within a session so follow-up
-  messages have continuity
+- Unified agent loop (`agent/agent_loop.py`): single ReAct-style loop with
+  tool descriptions in the system prompt — LLM decides actions autonomously
+- Tool-driven intelligence: read_file, list_directory, search_files,
+  run_command, semantic_search available as ACTION blocks
+- Personality and tone: system prompt shapes the agent as a concise, friendly
+  senior dev
+- Context awareness: semantic search integrated into the loop
+- Conversation memory: rolling 20-message history per session
+
+Remaining work:
+- Improve multi-turn context quality (summarisation, selective history)
+- Tune system prompt for the Qwen model's strengths and quirks
+- Add follow-up suggestions and proactive tool use

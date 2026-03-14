@@ -5,9 +5,8 @@ Tests cover:
 - Path traversal prevention with various attack vectors
 - Command injection prevention
 - Workspace boundary enforcement
-- Handling of malicious LLM outputs
 
-Requirements: 6.1, 6.2, 6.3, 6.4, 10.6, 20.3
+Requirements: 6.1, 6.2, 6.3, 6.4, 10.6
 """
 
 import os
@@ -16,9 +15,6 @@ import pytest
 
 from tools.filesystem import FilesystemTools, SecurityError
 from tools.terminal import TerminalTools
-from agent.executor import Executor
-from agent.models import FileChange, ChangeType
-from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -220,83 +216,3 @@ class TestCommandInjectionPrevention:
     def test_chained_semicolons_rejected(self, terminal):
         with pytest.raises(SecurityError):
             terminal.run_command("echo a; echo b; echo c")
-
-
-# ===========================================================================
-# Malicious LLM Output Handling (Requirements 6.1, 6.4, 20.3)
-# ===========================================================================
-
-class TestMaliciousLLMOutputHandling:
-    """Test that the executor safely handles malicious LLM responses."""
-
-    @pytest.fixture
-    def executor(self, temp_workspace):
-        mock_llm = MagicMock()
-        tool_system = MagicMock()
-        # Wire up a real FilesystemTools for path validation
-        tool_system.filesystem = FilesystemTools(workspace_path=temp_workspace)
-        executor = Executor(
-            llm_client=mock_llm,
-            tool_system=tool_system,
-            context_engine=None,
-        )
-        return executor
-
-    def test_write_file_with_traversal_path(self, executor):
-        """LLM tries to write to ../../etc/passwd via WRITE_FILE directive."""
-        malicious_response = (
-            'WRITE_FILE: ../../etc/passwd\n'
-            '```python\nroot:x:0:0:root:/root:/bin/bash\n```'
-        )
-        # parse_llm_response calls apply_write_file which calls read_file
-        # which calls validate_path — should raise SecurityError
-        with pytest.raises(SecurityError):
-            executor.parse_llm_response(malicious_response)
-
-    def test_write_file_with_absolute_path(self, executor):
-        """LLM tries to write to /tmp/evil.txt."""
-        malicious_response = (
-            'WRITE_FILE: /tmp/evil.txt\n'
-            '```python\nimport os; os.system("rm -rf /")\n```'
-        )
-        with pytest.raises(SecurityError):
-            executor.parse_llm_response(malicious_response)
-
-    def test_write_file_with_null_byte_path(self, executor):
-        """LLM injects null byte in file path."""
-        malicious_response = (
-            'WRITE_FILE: safe.py\x00../../etc/passwd\n'
-            '```python\nmalicious\n```'
-        )
-        # Should either raise SecurityError or ValueError, not silently succeed
-        with pytest.raises((SecurityError, ValueError, OSError)):
-            executor.parse_llm_response(malicious_response)
-
-    def test_valid_write_file_succeeds(self, executor, temp_workspace):
-        """Sanity check: a valid WRITE_FILE should parse without error."""
-        response = (
-            'WRITE_FILE: src/new_file.py\n'
-            '```python\nprint("hello")\n```'
-        )
-        changes, tool_calls = executor.parse_llm_response(response)
-        assert len(changes) == 1
-        assert changes[0].file_path == "src/new_file.py"
-
-    def test_tool_call_with_traversal_path(self, executor):
-        """LLM tries to read a file outside workspace via TOOL_CALL."""
-        malicious_response = (
-            'TOOL_CALL: read_file\n'
-            '```json\n{"path": "../../etc/passwd"}\n```'
-        )
-        changes, tool_calls = executor.parse_llm_response(malicious_response)
-        # Tool calls are parsed but not executed in parse_llm_response
-        # The actual execution should validate paths — verify the call was parsed
-        assert len(tool_calls) == 1
-        assert tool_calls[0].tool_name == "read_file"
-
-    def test_unparseable_response_does_not_crash(self, executor):
-        """Garbage LLM output should not crash the parser."""
-        garbage = "This is just random text with no directives at all."
-        changes, tool_calls = executor.parse_llm_response(garbage)
-        assert changes == []
-        assert tool_calls == []
