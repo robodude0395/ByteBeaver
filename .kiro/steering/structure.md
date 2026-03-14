@@ -41,10 +41,16 @@ local-offline-coding-agent/
 
 The project follows a phased approach:
 - Phase 1: Basic infrastructure (complete)
-- Phase 2: Filesystem tools and multi-file edits
-- Phase 3: Repository indexing and semantic search
-- Phase 4: Planner system and task execution loop
-- Phase 5: Web tool and terminal tool
-- Phase 6: VSCode extension integration
+- Phase 2: Filesystem tools and multi-file edits (complete)
+- Phase 3: Repository indexing and semantic search (complete)
+- Phase 4: Planner system and task execution loop (complete)
+- Phase 5: Web tool and terminal tool (complete)
+- Phase 6: VSCode extension integration (complete — MVP)
+- Phase 7: Conversational UX and agent personality (in progress)
+
+Phases 1–6 form the working MVP. Phase 7 focuses on making the agent feel like a
+knowledgeable, conversational coding partner rather than a blind task executor.
+This includes intent classification (chat vs. code task), natural conversation
+handling, personality/tone, and context-aware responses.
 
 When adding features, consider which phase they belong to and maintain backward compatibility.

@@ -135,3 +135,14 @@ class AgentSession:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     error: Optional[str] = None
+    conversation_history: List[Dict[str, str]] = field(default_factory=list)
+
+    def add_message(self, role: str, content: str) -> None:
+        """Append a message to conversation history.
+
+        Keeps a rolling window of the last 20 messages to stay within
+        token budgets.
+        """
+        self.conversation_history.append({"role": role, "content": content})
+        if len(self.conversation_history) > 20:
+            self.conversation_history = self.conversation_history[-20:]

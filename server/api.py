@@ -25,6 +25,8 @@ from agent.models import (
 )
 from agent.executor import Executor
 from agent.planner import Planner
+from agent.intent import IntentClassifier, Intent
+from agent.conversation import ConversationHandler
 from llm.client import LLMClient
 from tools.base import ToolSystem
 from context.indexer import ContextEngine
@@ -172,6 +174,8 @@ class PromptResponse(BaseModel):
     session_id: str
     plan: Optional[PlanInfo] = None
     status: str
+    chat_response: Optional[str] = None
+    intent: Optional[str] = None
 
 
 class FileChangeInfo(BaseModel):
@@ -303,16 +307,17 @@ async def get_metrics():
 
 @app.post("/agent/prompt", response_model=PromptResponse)
 async def process_prompt(request: PromptRequest):
-    """Process user prompt and create/update session.
+    """Process user prompt — routes to chat or planner based on intent.
 
-    Uses the Planner to generate a structured multi-task plan from the user
-    prompt, then executes the full plan via Executor.execute_plan().
+    First classifies the user's message. If it's casual conversation,
+    responds directly via the ConversationHandler. If it's a coding task,
+    uses the Planner to generate a structured plan and executes it.
 
     Args:
         request: Prompt request with user input
 
     Returns:
-        Response with session ID and plan
+        Response with session ID, and either a chat_response or a plan
     """
     global llm_client, context_engine, config, indexed_workspaces
 
@@ -331,7 +336,6 @@ async def process_prompt(request: PromptRequest):
         try:
             logger.info(f"Indexing workspace: {request.workspace_path}")
 
-            # Get file patterns from config or use defaults
             file_patterns = None
             exclude_patterns = None
             if config:
@@ -348,7 +352,6 @@ async def process_prompt(request: PromptRequest):
             logger.info(f"Workspace indexed successfully: {request.workspace_path}")
         except Exception as e:
             logger.error(f"Failed to index workspace: {e}", exc_info=True)
-            # Graceful degradation: continue without indexed workspace
 
     # Create or get session
     if request.session_id and request.session_id in sessions:
@@ -364,10 +367,46 @@ async def process_prompt(request: PromptRequest):
         sessions[session_id] = session
 
     try:
-        # Initialize Planner with LLM client
+        # --- Phase 7: Intent Classification ---
+        classifier = IntentClassifier(llm_client=llm_client)
+        intent = classifier.classify(request.prompt)
+        logger.info(f"Intent classified: {intent.value} for session {session.session_id}")
+
+        # --- Chat path: respond conversationally ---
+        if intent == Intent.CHAT:
+            # Get workspace context for informed answers
+            workspace_context_str = None
+            if context_engine:
+                try:
+                    workspace_context_str = context_engine.get_file_tree(request.workspace_path)
+                except Exception as e:
+                    logger.warning(f"Failed to get file tree for chat: {e}")
+
+            handler = ConversationHandler(llm_client=llm_client)
+            chat_response = handler.respond(
+                message=request.prompt,
+                conversation_history=session.conversation_history,
+                workspace_context=workspace_context_str,
+            )
+
+            # Store messages in session history
+            session.add_message("user", request.prompt)
+            session.add_message("assistant", chat_response)
+            session.status = SessionStatus.COMPLETED
+            session.updated_at = datetime.now()
+
+            return PromptResponse(
+                session_id=session.session_id,
+                status=session.status.value,
+                chat_response=chat_response,
+                intent=intent.value,
+            )
+
+        # --- Code task path: plan and execute ---
+        session.add_message("user", request.prompt)
+
         planner = Planner(llm_client=llm_client)
 
-        # Build workspace context for the planner
         workspace_context = {}
         if context_engine:
             try:
@@ -376,7 +415,6 @@ async def process_prompt(request: PromptRequest):
             except Exception as e:
                 logger.warning(f"Failed to get file tree: {e}")
 
-        # Generate plan from user prompt
         logger.info(f"Generating plan for session {session.session_id}")
         plan = planner.generate_plan(
             prompt=request.prompt,
@@ -387,17 +425,14 @@ async def process_prompt(request: PromptRequest):
         session.status = SessionStatus.EXECUTING
         session.updated_at = datetime.now()
 
-        # Initialize tool system for this workspace
         tool_system = ToolSystem(workspace_path=request.workspace_path)
 
-        # Initialize executor with context engine
         executor = Executor(
             llm_client=llm_client,
             tool_system=tool_system,
             context_engine=context_engine
         )
 
-        # Execute the full plan
         logger.info(f"Executing plan for session {session.session_id}")
         execution_result = executor.execute_plan(
             plan=plan,
@@ -405,10 +440,8 @@ async def process_prompt(request: PromptRequest):
             user_goal=request.prompt
         )
 
-        # Store execution result in session
         session.execution_result = execution_result
 
-        # Map execution result status to session status
         if execution_result.status == "completed":
             session.status = SessionStatus.COMPLETED
         elif execution_result.status == "partial":
@@ -420,7 +453,6 @@ async def process_prompt(request: PromptRequest):
 
         session.updated_at = datetime.now()
 
-        # Build response with plan info from all tasks
         plan_info = PlanInfo(
             tasks=[
                 TaskInfo(
@@ -436,7 +468,8 @@ async def process_prompt(request: PromptRequest):
         return PromptResponse(
             session_id=session.session_id,
             plan=plan_info,
-            status=session.status.value
+            status=session.status.value,
+            intent=intent.value,
         )
 
     except Exception as e:
@@ -454,9 +487,10 @@ async def process_prompt(request: PromptRequest):
 async def process_prompt_stream(request: PromptRequest):
     """Stream LLM tokens as Server-Sent Events during prompt execution.
 
-    Creates a session, generates a plan, then streams tokens from the LLM
-    for each task. Events are sent as SSE with types: session, plan, token,
-    task_result, done, error.
+    Classifies intent first. For chat messages, streams a conversational
+    response. For code tasks, generates a plan and streams task execution.
+
+    Events: session, intent, chat_token, plan, token, task_result, done, error.
 
     Args:
         request: Prompt request with user input
@@ -493,7 +527,7 @@ async def process_prompt_stream(request: PromptRequest):
             except Exception as e:
                 logger.error(f"Failed to index workspace: {e}", exc_info=True)
 
-        # Create session
+        # Create or get session
         session_id = request.session_id or str(uuid.uuid4())
         if session_id in sessions:
             session = sessions[session_id]
@@ -509,6 +543,42 @@ async def process_prompt_stream(request: PromptRequest):
         yield f"event: session\ndata: {json.dumps({'session_id': session_id})}\n\n"
 
         try:
+            # --- Phase 7: Intent Classification ---
+            classifier = IntentClassifier(llm_client=llm_client)
+            intent = classifier.classify(request.prompt)
+            yield f"event: intent\ndata: {json.dumps({'intent': intent.value})}\n\n"
+
+            # --- Chat path: stream conversational response ---
+            if intent == Intent.CHAT:
+                workspace_context_str = None
+                if context_engine:
+                    try:
+                        workspace_context_str = context_engine.get_file_tree(request.workspace_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to get file tree for chat: {e}")
+
+                handler = ConversationHandler(llm_client=llm_client)
+                full_response = ""
+
+                for token in handler.respond_streaming(
+                    message=request.prompt,
+                    conversation_history=session.conversation_history,
+                    workspace_context=workspace_context_str,
+                ):
+                    full_response += token
+                    yield f"event: chat_token\ndata: {json.dumps({'token': token})}\n\n"
+
+                session.add_message("user", request.prompt)
+                session.add_message("assistant", full_response)
+                session.status = SessionStatus.COMPLETED
+                session.updated_at = datetime.now()
+
+                yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id, 'intent': 'chat'})}\n\n"
+                return
+
+            # --- Code task path: plan and execute with streaming ---
+            session.add_message("user", request.prompt)
+
             planner = Planner(llm_client=llm_client)
             workspace_context = {}
             if context_engine:
