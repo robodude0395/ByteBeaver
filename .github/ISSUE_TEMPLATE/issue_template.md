@@ -1,34 +1,51 @@
 ---
-name: General Issue
-about: Report a problem or request a change
-title: "[Issue]: "
-labels: ""
+
+name: Feature / Improvement
+about: Request or track a new feature or improvement
+title: "[Feature]: "
+labels: enhancement
 assignees: ""
----
+-------------
 
-## Description
-A clear and concise description of the issue.
+## Summary
 
-## Steps To Reproduce
-If this is a bug, list the steps to reproduce it.
+A short description of the feature or improvement.
 
-1. Go to '...'
-2. Run '...'
-3. See error
+## User Story
 
-## Expected Behavior
-Describe what you expected to happen.
+As a **[type of user]**,
+I want **[some goal or capability]**,
+so that **[benefit / reason]**.
 
-## Actual Behavior
-Describe what actually happened.
+Example:
 
-## Screenshots / Logs
-If applicable, add screenshots or logs to help explain your problem.
+> As a developer
+> I want session memory support
+> so that the assistant can remember previous conversations.
 
-## Environment
-- OS: (e.g. Windows 11 / Ubuntu 22.04)
-- Version / Commit:
-- Browser (if applicable):
+## Proposed Solution
+
+Describe how this feature should work.
+
+## Acceptance Criteria
+
+* [ ] Feature behaves as expected
+* [ ] Documentation is updated (if applicable)
+* [ ] Tests added or updated
+* [ ] No breaking changes
+
+## Implementation Notes
+
+(Optional) Technical notes, ideas, or references for implementing this.
+
+## Screenshots / Mockups
+
+If applicable, add visuals or examples.
+
+## Related Issues / PRs
+
+Link related issues, discussions, or pull requests.
 
 ## Additional Context
-Add any other context about the problem here.
+
+Anything else that may help explain the request.
