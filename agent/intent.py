@@ -47,16 +47,21 @@ _EXPLORE_SIGNAL_WORDS = [
     "context", "codebase", "project", "workspace", "repository", "repo",
     "architecture", "structure", "overview", "summary", "summarize",
     "understand", "walk me through", "walk through",
+    "code", "module", "modules", "function", "functions",
+    "class", "classes", "file", "files", "directory", "directories",
 ]
 
 _EXPLORE_PATTERNS = [
     "what does this project",
     "what does the code",
     "what does this code",
+    "what the code",
     "tell me about the project",
     "tell me about this project",
     "tell me about the code",
     "tell me about this code",
+    "tell me what the code",
+    "tell me what this",
     "gather context",
     "analyze the",
     "analyze this",
@@ -66,10 +71,21 @@ _EXPLORE_PATTERNS = [
     "how is this project",
     "what's in this project",
     "what's in the project",
+    "what's in this workspace",
+    "what's in the workspace",
     "what files",
     "show me the",
     "give me an overview",
     "give me a summary",
+    "what code",
+    "about this workspace",
+    "about the workspace",
+    "about this project",
+    "about the project",
+    "about this codebase",
+    "about the codebase",
+    "in this workspace",
+    "in the workspace",
 ]
 
 _CODE_SIGNAL_WORDS = [
@@ -138,10 +154,16 @@ class IntentClassifier:
         # Check for explore signal words combined with question prefixes
         words = set(normalized.split())
         if words & set(_EXPLORE_SIGNAL_WORDS):
-            for prefix in _CHAT_PREFIX_PATTERNS:
-                if normalized.startswith(prefix):
-                    logger.info("Intent classified via explore signal: explore (message=%r)", message[:80])
-                    return Intent.EXPLORE
+            # If the message contains explore signal words AND looks like a
+            # question (starts with a chat prefix or contains a question mark),
+            # treat it as explore
+            is_question = message.strip().endswith("?")
+            starts_with_prefix = any(
+                normalized.startswith(prefix) for prefix in _CHAT_PREFIX_PATTERNS
+            )
+            if is_question or starts_with_prefix:
+                logger.info("Intent classified via explore signal: explore (message=%r)", message[:80])
+                return Intent.EXPLORE
 
         # Fast path: questions and conversational prefixes (pure chat)
         for prefix in _CHAT_PREFIX_PATTERNS:
