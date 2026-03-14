@@ -49,7 +49,7 @@ echo ""
 # Build flash attention flag
 FLASH_ATTN_FLAG=""
 if [ "$FLASH_ATTN" = "true" ]; then
-    FLASH_ATTN_FLAG="--flash-attn"
+    FLASH_ATTN_FLAG="--flash-attn on"
 fi
 
 # Run llama-server
