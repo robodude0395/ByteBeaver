@@ -934,3 +934,428 @@ echo "Hello"
         assert mock_llm.last_messages is not None
         prompt = mock_llm.last_messages[0]["content"]
         assert "REST API" in prompt or "user management" in prompt
+
+
+# ============================================================================
+# Task 22: Execution Loop Tests
+# ============================================================================
+
+class TestTaskExecutionCompletenessProperty:
+    """
+    Property 5: Task Execution Completeness
+
+    **Validates: Requirements 4.1**
+
+    Tests that all tasks in a plan are processed (completed or failed).
+    No task should remain in PENDING or IN_PROGRESS state after execute_plan().
+    """
+
+    @given(
+        num_tasks=st.integers(min_value=1, max_value=10),
+        fail_indices=st.frozensets(st.integers(min_value=0, max_value=9), max_size=5)
+    )
+    def test_property_5_all_tasks_processed(self, num_tasks, fail_indices):
+        """All tasks in a plan end up completed or failed after execute_plan()."""
+        from agent.models import Plan, TaskStatus, ExecutionResult
+
+        # Build tasks with no dependencies (all independent)
+        tasks = [
+            Task(
+                task_id=f"task_{i}",
+                description=f"Task {i}",
+                dependencies=[],
+                estimated_complexity="low"
+            )
+            for i in range(num_tasks)
+        ]
+
+        # Mock LLM that succeeds or fails based on fail_indices
+        class MockLLM:
+            def __init__(self, fail_set):
+                self._fail_set = fail_set
+
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class FailingExecutor(Executor):
+            """Executor that fails specific tasks by index."""
+            def __init__(self, llm_client, tool_system, fail_set):
+                super().__init__(llm_client, tool_system)
+                self._fail_set = fail_set
+                self._call_count = 0
+
+            def execute_task(self, task, workspace_path, user_goal=None):
+                from agent.models import TaskResult
+                idx = self._call_count
+                self._call_count += 1
+                if idx in self._fail_set:
+                    return TaskResult(task_id=task.task_id, status="failed", error="Simulated failure")
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        workspace = tempfile.mkdtemp()
+        try:
+            tool_sys = ToolSystem(workspace)
+            mock_llm = MockLLM(fail_indices)
+            executor = FailingExecutor(mock_llm, tool_sys, fail_indices)
+
+            plan = Plan(plan_id="test_plan", tasks=tasks)
+            result = executor.execute_plan(plan, workspace)
+
+            # Property: every task must be completed or failed
+            for task in plan.tasks:
+                assert task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED), \
+                    f"Task {task.task_id} has status {task.status}, expected COMPLETED or FAILED"
+
+            # Property: completed + failed covers all tasks
+            assert len(result.completed_tasks) + len(result.failed_tasks) == num_tasks
+        finally:
+            shutil.rmtree(workspace)
+
+
+class TestToolExecutionOnInvocationProperty:
+    """
+    Property 6: Tool Execution on Invocation
+
+    **Validates: Requirements 4.4**
+
+    Tests that all tool directives in LLM response are executed.
+    """
+
+    @given(
+        num_tool_calls=st.integers(min_value=1, max_value=5)
+    )
+    def test_property_6_all_tool_directives_executed(self, num_tool_calls):
+        """All TOOL_CALL directives in LLM response are executed."""
+        from agent.models import TaskResult
+
+        # Build an LLM response with TOOL_CALL directives in the correct format
+        # (JSON must be wrapped in ```json ... ``` code blocks)
+        tool_calls_text = ""
+        for i in range(num_tool_calls):
+            tool_calls_text += f'\nTOOL_CALL: read_file\n```json\n{{"path": "file_{i}.py"}}\n```\n'
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return tool_calls_text
+
+        workspace = tempfile.mkdtemp()
+        try:
+            tool_sys = ToolSystem(workspace)
+            executor = Executor(MockLLM(), tool_sys)
+
+            task = Task(task_id="t1", description="Test", dependencies=[], estimated_complexity="low")
+            result = executor.execute_task(task, workspace)
+
+            # Property: number of tool calls parsed matches number of directives
+            assert len(result.tool_calls) == num_tool_calls, \
+                f"Expected {num_tool_calls} tool calls, got {len(result.tool_calls)}"
+        finally:
+            shutil.rmtree(workspace)
+
+
+class TestTaskStatusUpdateProperty:
+    """
+    Property 7: Task Status Update
+
+    **Validates: Requirements 4.5**
+
+    Tests that completed tasks have status=COMPLETED in plan state.
+    """
+
+    @given(
+        num_tasks=st.integers(min_value=1, max_value=8)
+    )
+    def test_property_7_completed_tasks_have_correct_status(self, num_tasks):
+        """Tasks that succeed have TaskStatus.COMPLETED in the plan."""
+        from agent.models import Plan, TaskStatus, TaskResult
+
+        tasks = [
+            Task(
+                task_id=f"task_{i}",
+                description=f"Task {i}",
+                dependencies=[],
+                estimated_complexity="low"
+            )
+            for i in range(num_tasks)
+        ]
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class AlwaysSucceedExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        workspace = tempfile.mkdtemp()
+        try:
+            tool_sys = ToolSystem(workspace)
+            executor = AlwaysSucceedExecutor(MockLLM(), tool_sys)
+
+            plan = Plan(plan_id="test_plan", tasks=tasks)
+            result = executor.execute_plan(plan, workspace)
+
+            # Property: all tasks should be COMPLETED
+            for task in plan.tasks:
+                assert task.status == TaskStatus.COMPLETED, \
+                    f"Task {task.task_id} has status {task.status}, expected COMPLETED"
+
+            # Property: all task IDs in completed list
+            assert set(result.completed_tasks) == {f"task_{i}" for i in range(num_tasks)}
+            assert result.status == "completed"
+            assert len(result.failed_tasks) == 0
+        finally:
+            shutil.rmtree(workspace)
+
+
+class TestExecutionLoopUnitTests:
+    """
+    Unit tests for execute_plan() execution loop.
+
+    **Validates: Requirements 4.1, 4.5, 4.6**
+    """
+
+    def test_execute_multi_task_plan(self, temp_workspace):
+        """Test execution of a plan with multiple independent tasks."""
+        from agent.models import Plan, TaskStatus, TaskResult, FileChange, ChangeType
+
+        call_order = []
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class TrackingExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                call_order.append(task.task_id)
+                change = FileChange(
+                    change_id=f"change_{task.task_id}",
+                    file_path=f"{task.task_id}.py",
+                    change_type=ChangeType.CREATE,
+                    new_content="pass",
+                    diff="+ pass"
+                )
+                return TaskResult(task_id=task.task_id, status="success", changes=[change])
+
+        tasks = [
+            Task(task_id="task_1", description="First task", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Second task", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_3", description="Third task", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="multi_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = TrackingExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert result.status == "completed"
+        assert len(result.completed_tasks) == 3
+        assert len(result.failed_tasks) == 0
+        assert len(result.all_changes) == 3
+        assert len(call_order) == 3
+
+    def test_dependency_resolution(self, temp_workspace):
+        """Test that tasks with dependencies execute in correct order."""
+        from agent.models import Plan, TaskStatus, TaskResult
+
+        call_order = []
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class TrackingExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                call_order.append(task.task_id)
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        tasks = [
+            Task(task_id="task_1", description="Base task", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Depends on 1", dependencies=["task_1"], estimated_complexity="low"),
+            Task(task_id="task_3", description="Depends on 2", dependencies=["task_2"], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="dep_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = TrackingExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert call_order == ["task_1", "task_2", "task_3"]
+        assert result.status == "completed"
+
+    def test_error_handling_and_continuation(self, temp_workspace):
+        """Test that execution continues after a task fails."""
+        from agent.models import Plan, TaskStatus, TaskResult
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class FailSecondExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                if task.task_id == "task_2":
+                    return TaskResult(task_id=task.task_id, status="failed", error="Simulated failure")
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        tasks = [
+            Task(task_id="task_1", description="First", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Will fail", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_3", description="Third", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="err_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = FailSecondExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert result.status == "partial"
+        assert "task_1" in result.completed_tasks
+        assert "task_3" in result.completed_tasks
+        assert "task_2" in result.failed_tasks
+        assert plan.get_task("task_2").status == TaskStatus.FAILED
+
+    def test_change_accumulation_across_tasks(self, temp_workspace):
+        """Test that FileChange objects accumulate across all tasks."""
+        from agent.models import Plan, TaskResult, FileChange, ChangeType
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return "WRITE_FILE: out.py\n```python\npass\n```"
+
+        class MultiChangeExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                changes = [
+                    FileChange(
+                        change_id=f"change_{task.task_id}_{j}",
+                        file_path=f"{task.task_id}_file_{j}.py",
+                        change_type=ChangeType.CREATE,
+                        new_content="pass",
+                        diff="+ pass"
+                    )
+                    for j in range(2)
+                ]
+                return TaskResult(task_id=task.task_id, status="success", changes=changes)
+
+        tasks = [
+            Task(task_id="task_1", description="First", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Second", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="change_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = MultiChangeExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert len(result.all_changes) == 4  # 2 tasks × 2 changes each
+        assert result.status == "completed"
+
+    def test_exception_in_execute_task_handled(self, temp_workspace):
+        """Test that exceptions in execute_task are caught and task is marked failed."""
+        from agent.models import Plan, TaskStatus
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return ""
+
+        class ExplodingExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                raise RuntimeError("Unexpected boom")
+
+        tasks = [
+            Task(task_id="task_1", description="Will explode", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="boom_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = ExplodingExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert result.status == "failed"
+        assert "task_1" in result.failed_tasks
+        assert plan.get_task("task_1").status == TaskStatus.FAILED
+
+    def test_all_tasks_fail_returns_failed_status(self, temp_workspace):
+        """Test that when all tasks fail, status is 'failed'."""
+        from agent.models import Plan, TaskResult
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return ""
+
+        class AllFailExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                return TaskResult(task_id=task.task_id, status="failed", error="fail")
+
+        tasks = [
+            Task(task_id="task_1", description="Fail 1", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Fail 2", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="all_fail", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = AllFailExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        assert result.status == "failed"
+        assert len(result.failed_tasks) == 2
+        assert len(result.completed_tasks) == 0
+
+    def test_user_goal_passed_through(self, temp_workspace):
+        """Test that user_goal is forwarded to execute_task."""
+        from agent.models import Plan, TaskResult
+
+        received_goals = []
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return ""
+
+        class GoalTrackingExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                received_goals.append(user_goal)
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        tasks = [
+            Task(task_id="task_1", description="Task", dependencies=[], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="goal_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = GoalTrackingExecutor(MockLLM(), tool_sys)
+        executor.execute_plan(plan, temp_workspace, user_goal="Build a REST API")
+
+        assert received_goals == ["Build a REST API"]
+
+    def test_dependent_task_skipped_when_dependency_fails(self, temp_workspace):
+        """Test that tasks depending on a failed task are not executed (stuck as PENDING)."""
+        from agent.models import Plan, TaskStatus, TaskResult
+
+        executed = []
+
+        class MockLLM:
+            def complete(self, messages, temperature=0.2, max_tokens=2048):
+                return ""
+
+        class FailFirstExecutor(Executor):
+            def execute_task(self, task, workspace_path, user_goal=None):
+                executed.append(task.task_id)
+                if task.task_id == "task_1":
+                    return TaskResult(task_id=task.task_id, status="failed", error="fail")
+                return TaskResult(task_id=task.task_id, status="success", changes=[])
+
+        tasks = [
+            Task(task_id="task_1", description="Will fail", dependencies=[], estimated_complexity="low"),
+            Task(task_id="task_2", description="Depends on 1", dependencies=["task_1"], estimated_complexity="low"),
+        ]
+        plan = Plan(plan_id="dep_fail_plan", tasks=tasks)
+
+        tool_sys = ToolSystem(temp_workspace)
+        executor = FailFirstExecutor(MockLLM(), tool_sys)
+        result = executor.execute_plan(plan, temp_workspace)
+
+        # task_2 should never execute because task_1 failed
+        assert "task_1" in executed
+        assert "task_2" not in executed
+        assert "task_1" in result.failed_tasks
+        # task_2 stays PENDING since its dependency never completed
+        assert plan.get_task("task_2").status == TaskStatus.PENDING

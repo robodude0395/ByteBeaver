@@ -8,11 +8,12 @@ those directives through the tool system.
 
 import re
 import logging
+import traceback
 import uuid
 from typing import Optional, List, Dict, Any
 from agent.models import (
-    Task, TaskResult, FileChange, ToolCall,
-    ChangeType, TaskStatus
+    Task, Plan, TaskResult, FileChange, ToolCall,
+    ExecutionResult, ChangeType, TaskStatus
 )
 from llm.client import LLMClient
 from tools.base import ToolSystem
@@ -51,6 +52,68 @@ class Executor:
         self.context_engine = context_engine
         self.max_parse_retries = 2
 
+    def execute_plan(
+        self,
+        plan: Plan,
+        workspace_path: str,
+        user_goal: Optional[str] = None
+    ) -> ExecutionResult:
+        """
+        Execute all tasks in a plan sequentially.
+
+        Processes tasks using plan.get_next_task() which handles dependency
+        resolution. Continues execution even if individual tasks fail.
+
+        Args:
+            plan: Structured task plan to execute
+            workspace_path: Root directory for operations
+            user_goal: Optional user's original goal/prompt
+
+        Returns:
+            ExecutionResult with completed/failed task lists and all changes
+        """
+        all_changes: List[FileChange] = []
+        completed: List[str] = []
+        failed: List[str] = []
+
+        logger.info("Starting plan execution plan_id=%s tasks=%d", plan.plan_id, len(plan.tasks))
+
+        while (task := plan.get_next_task()) is not None:
+            task.status = TaskStatus.IN_PROGRESS
+            logger.info("Starting task task_id=%s description=%s", task.task_id, task.description)
+
+            try:
+                result = self.execute_task(task, workspace_path, user_goal=user_goal)
+
+                if result.status == "success":
+                    task.status = TaskStatus.COMPLETED
+                    completed.append(task.task_id)
+                    all_changes.extend(result.changes)
+                    logger.info("Task completed task_id=%s changes=%d", task.task_id, len(result.changes))
+                else:
+                    task.status = TaskStatus.FAILED
+                    failed.append(task.task_id)
+                    logger.error("Task failed task_id=%s error=%s", task.task_id, result.error)
+
+            except Exception as e:
+                task.status = TaskStatus.FAILED
+                failed.append(task.task_id)
+                logger.error("Task %s raised exception: %s", task.task_id, e, exc_info=True)
+
+        status = "completed" if not failed else "partial" if completed else "failed"
+        logger.info(
+            "Plan execution finished plan_id=%s status=%s completed=%d failed=%d",
+            plan.plan_id, status, len(completed), len(failed),
+        )
+        return ExecutionResult(
+            plan_id=plan.plan_id,
+            status=status,
+            completed_tasks=completed,
+            failed_tasks=failed,
+            all_changes=all_changes
+        )
+
+
     def execute_task(
         self,
         task: Task,
@@ -60,6 +123,12 @@ class Executor:
         """
         Execute a single task with context retrieval and LLM calls.
 
+        Implements graceful degradation:
+        - Context search failure → continue without context
+        - LLM timeout → retry with shorter context
+        - LLM unreachable → return error to client
+        - Tool execution failure → log and continue
+
         Args:
             task: Task to execute
             workspace_path: Root directory for operations
@@ -68,9 +137,9 @@ class Executor:
         Returns:
             TaskResult with changes and tool calls
         """
-        logger.info(f"Executing task {task.task_id}: {task.description}")
+        logger.info("Executing task %s: %s", task.task_id, task.description)
 
-        # Retrieve context if context engine is available
+        # Retrieve context — graceful degradation on failure
         context = self._retrieve_context(task, workspace_path) if self.context_engine else []
 
         # Build prompt for LLM
@@ -86,12 +155,12 @@ class Executor:
                 messages = [{"role": "user", "content": prompt}]
                 response = self.llm_client.complete(messages, temperature=0.2)
 
-                logger.debug(f"LLM response received ({len(response)} chars)")
+                logger.debug("LLM response received (%d chars)", len(response))
 
                 # Parse response for directives
                 changes, tool_calls = self.parse_llm_response(response)
 
-                # Execute tool calls
+                # Execute tool calls (continue on individual failures)
                 for tool_call in tool_calls:
                     self._execute_tool_call(tool_call)
 
@@ -106,32 +175,51 @@ class Executor:
             except ValueError as e:
                 # Parsing error - retry with clarification
                 parse_error = str(e)
-                logger.warning(f"Parse error on attempt {attempt + 1}: {parse_error}")
+                logger.warning(
+                    "Parse error on attempt %d/%d: %s",
+                    attempt + 1, self.max_parse_retries + 1, parse_error,
+                )
 
                 if attempt < self.max_parse_retries:
-                    # Add clarification to prompt
                     prompt = self._add_clarification_prompt(prompt, parse_error)
                 else:
-                    # Max retries reached
-                    logger.error(f"Failed to parse LLM response after {self.max_parse_retries + 1} attempts")
+                    logger.error(
+                        "Failed to parse LLM response after %d attempts",
+                        self.max_parse_retries + 1,
+                        exc_info=True,
+                    )
                     return TaskResult(
                         task_id=task.task_id,
                         status="failed",
                         error=f"Failed to parse LLM response: {parse_error}"
                     )
 
-            except (ConnectionError, TimeoutError) as e:
-                # LLM server error - fail immediately
-                logger.error(f"LLM error: {e}")
+            except TimeoutError as e:
+                # LLM timeout — retry once with shorter context
+                logger.error("LLM timeout for task %s: %s", task.task_id, e, exc_info=True)
+                if context and attempt == 0:
+                    logger.info("Retrying task %s with reduced context", task.task_id)
+                    context = context[:3]  # keep only top 3 results
+                    prompt = self._build_prompt(task, context, user_goal, workspace_path)
+                    continue
                 return TaskResult(
                     task_id=task.task_id,
                     status="failed",
-                    error=str(e)
+                    error=f"LLM request timed out: {e}"
+                )
+
+            except ConnectionError as e:
+                # LLM unreachable — fail immediately with clear message
+                logger.error("LLM server unreachable: %s", e, exc_info=True)
+                return TaskResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    error=f"LLM server unavailable: {e}"
                 )
 
             except Exception as e:
-                # Unexpected error
-                logger.error(f"Unexpected error executing task: {e}", exc_info=True)
+                # Unexpected error — always include stack trace
+                logger.error("Unexpected error executing task %s: %s", task.task_id, e, exc_info=True)
                 return TaskResult(
                     task_id=task.task_id,
                     status="failed",
@@ -304,7 +392,7 @@ class Executor:
                 for r in results
             ]
         except Exception as e:
-            logger.warning(f"Context retrieval failed: {e}")
+            logger.warning("Context retrieval failed, continuing without context: %s", e, exc_info=True)
             return []
 
     def _build_prompt(
@@ -392,6 +480,9 @@ class Executor:
         """
         Execute a tool call through the tool system.
 
+        Implements graceful degradation: logs the failure and continues
+        rather than aborting the entire task.
+
         Args:
             tool_call: ToolCall object to execute
 
@@ -403,10 +494,12 @@ class Executor:
                 **tool_call.arguments
             )
             tool_call.result = result
-            logger.debug(f"Tool call {tool_call.tool_name} succeeded")
+            logger.debug("Tool call %s succeeded", tool_call.tool_name)
         except Exception as e:
             tool_call.error = str(e)
-            logger.error(f"Tool call {tool_call.tool_name} failed: {e}")
+            logger.error(
+                "Tool call %s failed: %s", tool_call.tool_name, e, exc_info=True
+            )
 
     def _generate_diff(self, file_path: str, original: str, new: str) -> str:
         """

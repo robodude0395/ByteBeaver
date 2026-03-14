@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+!node_modules/axios/**
+.gitignore
+tsconfig.json
+jest.config.js
+**/*.ts
+**/*.map
+**/*.test.*
+__tests__/**
+__mocks__/**

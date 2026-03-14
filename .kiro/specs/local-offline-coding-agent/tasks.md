@@ -392,8 +392,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
 
 ### Phase 4: Planner System and Task Execution Loop
 
-- [ ] 21. Implement planner component
-  - [ ] 21.1 Create agent/planner.py with Planner class
+- [x] 21. Implement planner component
+  - [x] 21.1 Create agent/planner.py with Planner class
     - Implement __init__ accepting llm_client
     - Implement generate_plan() method accepting prompt and workspace_context
     - Build planning prompt with user request and file tree
@@ -404,19 +404,19 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Implement timeout handling (10 seconds) with fallback to single-task plan
     - _Requirements: 3.1, 3.2, 3.3, 3.5_
 
-  - [ ]* 21.2 Write property test for plan structure validity
+  - [x]* 21.2 Write property test for plan structure validity
     - **Property 3: Plan Structure Validity**
     - **Validates: Requirements 3.1, 3.2**
     - Test that generated plans have valid JSON structure with required fields
     - _Requirements: 3.1, 3.2_
 
-  - [ ]* 21.3 Write property test for plan non-empty
+  - [x]* 21.3 Write property test for plan non-empty
     - **Property 4: Plan Non-Empty**
     - **Validates: Requirements 3.4**
     - Test that all generated plans contain at least one task
     - _Requirements: 3.4_
 
-  - [ ]* 21.4 Write unit tests for planner
+  - [x]* 21.4 Write unit tests for planner
     - Test plan generation with various prompts
     - Test JSON parsing and validation
     - Test retry logic on parse failures
@@ -424,8 +424,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test task dependency validation
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
 
-- [ ] 22. Implement full task execution loop
-  - [ ] 22.1 Update Executor with execute_plan() method
+- [x] 22. Implement full task execution loop
+  - [x] 22.1 Update Executor with execute_plan() method
     - Implement loop: while plan.get_next_task() is not None
     - Set task status to "in_progress"
     - Call execute_task() for current task
@@ -435,33 +435,33 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Return ExecutionResult with completed/failed task lists and all changes
     - _Requirements: 4.1, 4.5, 4.6_
 
-  - [ ]* 22.2 Write property test for task execution completeness
+  - [x]* 22.2 Write property test for task execution completeness
     - **Property 5: Task Execution Completeness**
     - **Validates: Requirements 4.1**
     - Test that all tasks in plan are processed (completed or failed)
     - _Requirements: 4.1_
 
-  - [ ]* 22.3 Write property test for tool execution on invocation
+  - [x]* 22.3 Write property test for tool execution on invocation
     - **Property 6: Tool Execution on Invocation**
     - **Validates: Requirements 4.4**
     - Test that all tool directives in LLM response are executed
     - _Requirements: 4.4_
 
-  - [ ]* 22.4 Write property test for task status update
+  - [x]* 22.4 Write property test for task status update
     - **Property 7: Task Status Update**
     - **Validates: Requirements 4.5**
     - Test that completed tasks have status="completed" in plan state
     - _Requirements: 4.5_
 
-  - [ ]* 22.5 Write unit tests for execution loop
+  - [x]* 22.5 Write unit tests for execution loop
     - Test execution of multi-task plans
     - Test dependency resolution
     - Test error handling and continuation
     - Test change accumulation across tasks
     - _Requirements: 4.1, 4.5, 4.6_
 
-- [ ] 23. Integrate planner with API
-  - [ ] 23.1 Update POST /agent/prompt to use Planner
+- [x] 23. Integrate planner with API
+  - [x] 23.1 Update POST /agent/prompt to use Planner
     - Initialize Planner with llm_client
     - Call planner.generate_plan() with user prompt
     - Store Plan in session state
@@ -469,48 +469,48 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Return plan structure and pending changes in response
     - _Requirements: 2.1, 3.1, 4.1_
 
-  - [ ] 23.2 Update GET /agent/status to include plan progress
+  - [x] 23.2 Update GET /agent/status to include plan progress
     - Return current task description
     - Return list of completed task IDs
     - Return list of pending task IDs
     - Calculate and return progress percentage
     - _Requirements: 2.2, 4.5_
 
-  - [ ]* 23.3 Write integration tests for planning workflow
+  - [x]* 23.3 Write integration tests for planning workflow
     - Test end-to-end: prompt → plan → execute → changes
     - Test multi-task plan execution
     - Test status updates during execution
     - _Requirements: 2.1, 2.2, 3.1, 4.1_
 
-- [ ] 24. Implement error handling and logging
-  - [ ] 24.1 Create utils/logging.py with logging configuration
+- [x] 24. Implement error handling and logging
+  - [x] 24.1 Create utils/logging.py with logging configuration
     - Set up rotating file handler (100MB max, keep 5 files)
     - Configure log format with timestamp, level, component, message
     - Set log levels: DEBUG for development, INFO for production
     - Add structured logging for key events (task start/complete, errors)
     - _Requirements: 17.1, 17.4_
 
-  - [ ] 24.2 Add error handling throughout components
+  - [x] 24.2 Add error handling throughout components
     - Add try-except blocks in executor, planner, tools
     - Log errors with stack traces
     - Implement graceful degradation (e.g., continue without context on search failure)
     - Return clear error messages to API clients
     - _Requirements: 17.1, 17.2, 17.3, 17.5_
 
-  - [ ]* 24.3 Write property test for error logging completeness
+  - [x]* 24.3 Write property test for error logging completeness
     - **Property 24: Error Logging Completeness**
     - **Validates: Requirements 17.1**
     - Test that all errors produce log entries with timestamp, message, stack trace
     - _Requirements: 17.1_
 
-  - [ ]* 24.4 Write unit tests for error handling
+  - [x]* 24.4 Write unit tests for error handling
     - Test LLM server unreachable scenario
     - Test tool execution failures
     - Test parsing errors with retry
     - Test error message propagation to API
     - _Requirements: 17.1, 17.2, 17.3_
 
-- [ ] 25. Checkpoint - Full planning and execution working
+- [x] 25. Checkpoint - Full planning and execution working
   - Ensure planner generates valid multi-task plans
   - Ensure executor processes all tasks in order
   - Ensure task dependencies are respected
@@ -520,8 +520,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
 
 ### Phase 5: Web Tool and Terminal Tool
 
-- [ ] 26. Implement terminal command execution
-  - [ ] 26.1 Create tools/terminal.py with TerminalTools class
+- [x] 26. Implement terminal command execution
+  - [x] 26.1 Create tools/terminal.py with TerminalTools class
     - Implement __init__ accepting workspace_path and config
     - Implement run_command() method accepting command string and timeout
     - Execute command in subprocess with workspace as working directory
@@ -531,25 +531,25 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Implement security checks: reject commands with shell operators (;, &&, ||, |, >, <, `, $())
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6_
 
-  - [ ]* 26.2 Write property test for command working directory
+  - [x]* 26.2 Write property test for command working directory
     - **Property 17: Command Working Directory**
     - **Validates: Requirements 10.2**
     - Test that commands execute in workspace directory (verify with pwd/cd commands)
     - _Requirements: 10.2_
 
-  - [ ]* 26.3 Write property test for command output capture
+  - [x]* 26.3 Write property test for command output capture
     - **Property 18: Command Output Capture**
     - **Validates: Requirements 10.3, 10.4**
     - Test that CommandResult includes exit_code, stdout, stderr from execution
     - _Requirements: 10.3, 10.4_
 
-  - [ ]* 26.4 Write property test for dangerous command rejection
+  - [x]* 26.4 Write property test for dangerous command rejection
     - **Property 19: Dangerous Command Rejection**
     - **Validates: Requirements 10.6**
     - Test that commands with shell operators are rejected before execution
     - _Requirements: 10.6_
 
-  - [ ]* 26.5 Write unit tests for terminal tool
+  - [x]* 26.5 Write unit tests for terminal tool
     - Test command execution with various commands
     - Test stdout/stderr capture
     - Test exit code handling
@@ -558,8 +558,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test working directory verification
     - _Requirements: 10.1-10.6_
 
-- [ ] 27. Implement web search tool
-  - [ ] 27.1 Create tools/web.py with WebTools class
+- [x] 27. Implement web search tool
+  - [x] 27.1 Create tools/web.py with WebTools class
     - Add duckduckgo-search and beautifulsoup4 to requirements.txt
     - Implement __init__ accepting config
     - Implement web_search() method accepting query string
@@ -572,19 +572,19 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add rate limiting: max 5 searches per session, 2 second delay between searches
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-  - [ ]* 27.2 Write property test for web search result structure
+  - [x]* 27.2 Write property test for web search result structure
     - **Property 15: Web Search Result Structure**
     - **Validates: Requirements 9.4**
     - Test that all results have title, url, summary, content fields
     - _Requirements: 9.4_
 
-  - [ ]* 27.3 Write property test for web search graceful failure
+  - [x]* 27.3 Write property test for web search graceful failure
     - **Property 16: Web Search Graceful Failure**
     - **Validates: Requirements 9.5**
     - Test that errors return empty list without raising exceptions
     - _Requirements: 9.5_
 
-  - [ ]* 27.4 Write unit tests for web search
+  - [x]* 27.4 Write unit tests for web search
     - Test search with valid queries (mock HTTP responses)
     - Test HTML scraping and content extraction
     - Test rate limiting
@@ -592,27 +592,27 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test disabled web search returns empty list
     - _Requirements: 9.1-9.5_
 
-- [ ] 28. Integrate terminal and web tools with tool system
-  - [ ] 28.1 Update tools/base.py to include terminal and web tools
+- [x] 28. Integrate terminal and web tools with tool system
+  - [x] 28.1 Update tools/base.py to include terminal and web tools
     - Initialize TerminalTools and WebTools in ToolSystem.__init__
     - Register run_command and web_search methods
     - Update tool descriptions in prompts to include new tools
     - _Requirements: 9.1, 10.1_
 
-  - [ ] 28.2 Update executor to parse TOOL_CALL directives
+  - [x] 28.2 Update executor to parse TOOL_CALL directives
     - Extend parse_llm_response() to extract TOOL_CALL blocks
     - Parse JSON arguments from TOOL_CALL
     - Invoke tools through ToolSystem
     - Store tool results in TaskResult
     - _Requirements: 4.4, 12.3_
 
-  - [ ]* 28.3 Write integration tests for tool usage
+  - [x]* 28.3 Write integration tests for tool usage
     - Test executor calling run_command through LLM
     - Test executor calling web_search through LLM
     - Test tool results included in task results
     - _Requirements: 4.4, 9.1, 10.1_
 
-- [ ] 29. Checkpoint - All tools functional
+- [x] 29. Checkpoint - All tools functional
   - Ensure terminal commands execute correctly with output capture
   - Ensure web search retrieves and scrapes results
   - Ensure security checks prevent dangerous operations
@@ -621,8 +621,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
 
 ### Phase 6: VSCode Extension Integration
 
-- [ ] 30. Set up VSCode extension project
-  - [ ] 30.1 Create vscode-extension directory structure
+- [x] 30. Set up VSCode extension project
+  - [x] 30.1 Create vscode-extension directory structure
     - Initialize npm project with package.json
     - Install dependencies: vscode, axios, @types/vscode, @types/node
     - Create src/ directory for TypeScript source files
@@ -630,7 +630,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Create .vscodeignore for extension packaging
     - _Requirements: 18.6_
 
-  - [ ] 30.2 Create extension manifest (package.json)
+  - [x] 30.2 Create extension manifest (package.json)
     - Define extension metadata (name, version, description, publisher)
     - Define activation events (onCommand, onView)
     - Define contributed commands (/agent build, /agent implement, etc.)
@@ -638,8 +638,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Define configuration properties (agent server URL)
     - _Requirements: 13.5_
 
-- [ ] 31. Implement agent client for API communication
-  - [ ] 31.1 Create src/agentClient.ts with AgentClient class
+- [x] 31. Implement agent client for API communication
+  - [x] 31.1 Create src/agentClient.ts with AgentClient class
     - Implement constructor accepting base URL
     - Implement sendPrompt() method calling POST /agent/prompt
     - Implement getStatus() method calling GET /agent/status/{session_id}
@@ -649,7 +649,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Use axios for HTTP requests
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 13.2_
 
-  - [ ]* 31.2 Write unit tests for agent client
+  - [x]* 31.2 Write unit tests for agent client
     - Test sendPrompt with valid payloads
     - Test getStatus with session IDs
     - Test applyChanges with change IDs
@@ -657,8 +657,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Mock HTTP responses using jest
     - _Requirements: 2.1, 2.2, 2.3, 13.2_
 
-- [ ] 32. Implement chat panel webview
-  - [ ] 32.1 Create src/chatPanel.ts with ChatPanel class
+- [x] 32. Implement chat panel webview
+  - [x] 32.1 Create src/chatPanel.ts with ChatPanel class
     - Implement constructor accepting extension context and agent client
     - Implement show() method to create and display webview panel
     - Implement sendMessage() method to send user input to agent
@@ -669,7 +669,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add typing indicators during LLM generation
     - _Requirements: 13.1, 13.2, 13.3, 13.4_
 
-  - [ ] 32.2 Create webview HTML/CSS/JS for chat interface
+  - [x] 32.2 Create webview HTML/CSS/JS for chat interface
     - Create React-based chat UI (or vanilla JS for simplicity)
     - Display message history with user/agent distinction
     - Show typing indicators and progress bars
@@ -678,8 +678,8 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Support markdown rendering for code blocks
     - _Requirements: 13.1, 13.3_
 
-- [ ] 33. Implement diff preview and change management
-  - [ ] 33.1 Create src/diffProvider.ts with DiffProvider class
+- [x] 33. Implement diff preview and change management
+  - [x] 33.1 Create src/diffProvider.ts with DiffProvider class
     - Implement showChanges() method to display diffs for all pending changes
     - Create temporary files with proposed content
     - Use vscode.commands.executeCommand('vscode.diff') to show diff editor
@@ -689,15 +689,15 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Update workspace files after successful application
     - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5_
 
-  - [ ]* 33.2 Write unit tests for diff provider
+  - [x]* 33.2 Write unit tests for diff provider
     - Test diff view creation
     - Test change acceptance workflow
     - Test change rejection workflow
     - Test file updates after application
     - _Requirements: 14.1-14.5_
 
-- [ ] 34. Implement slash commands
-  - [ ] 34.1 Create src/commands.ts with slash command handlers
+- [x] 34. Implement slash commands
+  - [x] 34.1 Create src/commands.ts with slash command handlers
     - Define slash command mappings (/agent build, /agent implement, etc.)
     - Implement handleSlashCommand() to parse command and arguments
     - Convert slash commands to full prompts
@@ -705,34 +705,34 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Implement auto-completion provider for slash commands
     - _Requirements: 13.5_
 
-  - [ ]* 34.2 Write property test for slash command recognition
+  - [x]* 34.2 Write property test for slash command recognition
     - **Property 22: Slash Command Recognition**
     - **Validates: Requirements 13.5**
     - Test that all recognized slash commands are parsed and handled correctly
     - _Requirements: 13.5_
 
-  - [ ]* 34.3 Write unit tests for slash commands
+  - [x]* 34.3 Write unit tests for slash commands
     - Test command parsing
     - Test prompt generation from commands
     - Test auto-completion
     - _Requirements: 13.5_
 
-- [ ] 35. Implement status bar and progress indicators
-  - [ ] 35.1 Create src/statusBar.ts with AgentStatusBar class
+- [x] 35. Implement status bar and progress indicators
+  - [x] 35.1 Create src/statusBar.ts with AgentStatusBar class
     - Implement status bar item showing agent state (idle, planning, executing)
     - Update status bar during task execution
     - Show progress percentage
     - Add click handler to open chat panel
     - _Requirements: 13.4_
 
-  - [ ]* 35.2 Write unit tests for status bar
+  - [x]* 35.2 Write unit tests for status bar
     - Test status updates
     - Test progress display
     - Test click handler
     - _Requirements: 13.4_
 
-- [ ] 36. Implement extension activation and registration
-  - [ ] 36.1 Create src/extension.ts with activate() function
+- [x] 36. Implement extension activation and registration
+  - [x] 36.1 Create src/extension.ts with activate() function
     - Initialize agent client with configured server URL
     - Create and register chat panel
     - Register all commands (openChat, build, implement, refactor, etc.)
@@ -741,22 +741,22 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Add deactivate() function for cleanup
     - _Requirements: 13.1, 13.5_
 
-  - [ ] 36.2 Add extension configuration
+  - [x] 36.2 Add extension configuration
     - Define configuration schema in package.json
     - Add agent.serverUrl setting (default: http://localhost:8000)
     - Add agent.autoApplyChanges setting (default: false)
     - Load configuration in extension code
     - _Requirements: 19.5_
 
-- [ ] 37. Build and package extension
-  - [ ] 37.1 Set up build scripts
+- [x] 37. Build and package extension
+  - [x] 37.1 Set up build scripts
     - Add compile script to package.json (tsc -p ./)
     - Add watch script for development (tsc -watch -p ./)
     - Add package script using vsce (vsce package)
     - Create .vscodeignore to exclude unnecessary files
     - _Requirements: 18.6_
 
-  - [ ] 37.2 Create extension README and documentation
+  - [x] 37.2 Create extension README and documentation
     - Write README.md with installation instructions
     - Document slash commands and features
     - Add screenshots of chat panel and diff view
@@ -764,7 +764,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - _Requirements: 13.5, 14.1_
 
 - [ ] 38. End-to-end testing and integration
-  - [ ]* 38.1 Write end-to-end tests for full workflow
+  - [x]* 38.1 Write end-to-end tests for full workflow
     - Test: User sends prompt → Agent generates plan → Executes tasks → Returns changes
     - Test: User accepts changes → Files are written to workspace
     - Test: User rejects changes → Changes are discarded
@@ -772,7 +772,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Test: Error handling and recovery
     - _Requirements: 20.5_
 
-  - [ ]* 38.2 Write integration tests for VSCode extension
+  - [~]* 38.2 Write integration tests for VSCode extension
     - Test extension activation
     - Test chat panel creation and messaging
     - Test diff view display

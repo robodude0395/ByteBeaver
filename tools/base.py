@@ -5,18 +5,22 @@ This module provides a unified interface for registering and invoking tools
 (filesystem, terminal, web) and tracks tool invocations for debugging and logging.
 """
 
+import logging
 from typing import Dict, Any, Callable, Optional
 from tools.filesystem import FilesystemTools
+from tools.terminal import TerminalTools
+from tools.web import WebTools
 from agent.models import ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 class ToolSystem:
     """
     Coordinates all tools and provides unified interface for tool operations.
 
-    The ToolSystem manages tool registration, invocation, and tracking. It currently
-    supports filesystem tools and will be extended to support terminal and web tools
-    in later phases.
+    The ToolSystem manages tool registration, invocation, and tracking.
+    It supports filesystem, terminal, and web tools.
     """
 
     def __init__(self, workspace_path: str, config: Optional[Dict[str, Any]] = None):
@@ -33,11 +37,19 @@ class ToolSystem:
         # Initialize filesystem tools
         self.filesystem = FilesystemTools(workspace_path, self.config.get('filesystem', {}))
 
+        # Initialize terminal tools
+        self.terminal = TerminalTools(workspace_path, self.config.get('terminal', {}))
+
+        # Initialize web tools
+        self.web = WebTools(self.config.get('web', {}))
+
         # Tool registry: maps tool names to callable functions
         self._tools: Dict[str, Callable] = {}
 
-        # Register filesystem tools
+        # Register all tools
         self._register_filesystem_tools()
+        self._register_terminal_tools()
+        self._register_web_tools()
 
         # Track tool invocations for debugging and logging
         self.call_history: list[ToolCall] = []
@@ -49,6 +61,14 @@ class ToolSystem:
         self._tools['create_file'] = self.filesystem.create_file
         self._tools['list_directory'] = self.filesystem.list_directory
         self._tools['search_files'] = self.filesystem.search_files
+
+    def _register_terminal_tools(self) -> None:
+        """Register terminal tool methods."""
+        self._tools['run_command'] = self.terminal.run_command
+
+    def _register_web_tools(self) -> None:
+        """Register web tool methods."""
+        self._tools['web_search'] = self.web.web_search
 
     def register_tool(self, name: str, func: Callable) -> None:
         """
@@ -97,6 +117,7 @@ class ToolSystem:
         except Exception as e:
             # Capture error in tool call record
             tool_call.error = str(e)
+            logger.error("Tool '%s' execution failed: %s", tool_name, e, exc_info=True)
             raise
         finally:
             # Always track the invocation

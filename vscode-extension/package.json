@@ -1,0 +1,106 @@
+{
+  "name": "local-offline-coding-agent",
+  "displayName": "Local Offline Coding Agent",
+  "description": "VSCode extension for the local offline AI coding agent",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [
+    "onView:agentChatPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "local-agent.openChat",
+        "title": "Open Agent Chat",
+        "category": "Agent"
+      },
+      {
+        "command": "local-agent.build",
+        "title": "Build Project",
+        "category": "Agent"
+      },
+      {
+        "command": "local-agent.implement",
+        "title": "Implement Feature",
+        "category": "Agent"
+      },
+      {
+        "command": "local-agent.refactor",
+        "title": "Refactor Code",
+        "category": "Agent"
+      },
+      {
+        "command": "local-agent.explain",
+        "title": "Explain Code",
+        "category": "Agent"
+      },
+      {
+        "command": "local-agent.cancelSession",
+        "title": "Cancel Session",
+        "category": "Agent"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agent-sidebar",
+          "title": "Coding Agent",
+          "icon": "resources/agent-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agent-sidebar": [
+        {
+          "id": "agentChatPanel",
+          "type": "webview",
+          "name": "Agent Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Local Offline Coding Agent",
+      "properties": {
+        "agent.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL of the agent server"
+        },
+        "agent.autoApplyChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically apply proposed code changes without review"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts",
+    "test": "jest --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
+    "fast-check": "^4.6.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
