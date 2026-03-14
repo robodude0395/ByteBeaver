@@ -565,6 +565,8 @@ async def process_prompt_stream(request: PromptRequest):
                     conversation_history=session.conversation_history,
                     workspace_context=workspace_context_str,
                 ):
+                    if token is None:
+                        continue
                     full_response += token
                     yield f"event: chat_token\ndata: {json.dumps({'token': token})}\n\n"
 

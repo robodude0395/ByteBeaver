@@ -91,7 +91,8 @@ class ConversationHandler:
                 temperature=0.7,
                 max_tokens=1024,
             ):
-                yield token
+                if token is not None:
+                    yield token
         except Exception as e:
             logger.error("Conversation streaming failed: %s", e, exc_info=True)
             yield "Sorry, I'm having trouble responding right now."

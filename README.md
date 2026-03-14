@@ -80,7 +80,25 @@ Environment variable overrides: `AGENT_LLM_BASE_URL`, `AGENT_HOST`, `AGENT_PORT`
 
 ## VSCode Extension
 
-Slash commands in the chat panel:
+### Building the Extension
+
+After making changes to the extension source code, rebuild and reinstall:
+
+```bash
+# 1. Bundle the TypeScript source
+cd vscode-extension
+node esbuild.js
+
+# 2. Package into a .vsix file
+npx vsce package
+
+# 3. Install in VSCode
+code --install-extension local-offline-coding-agent-0.0.1.vsix
+```
+
+You may need to reload the VSCode window (`Cmd+Shift+P` → "Reload Window") for changes to take effect.
+
+### Slash Commands
 
 | Command | What it does |
 |---------|--------------|
