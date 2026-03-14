@@ -175,10 +175,25 @@ export class DiffProvider {
 
     /**
      * Extract the writable content from a FileChangeInfo.
-     * Uses new_content (actual file content) when available, falls back to diff.
+     * Uses new_content (actual file content) when available.
+     * Falls back to diff with unified diff markers stripped.
      */
     private extractContent(change: FileChangeInfo): Uint8Array {
-        const content = change.new_content ?? change.diff;
+        let content = change.new_content ?? change.diff;
+        // Safety net: if content looks like a unified diff, strip the markers
+        if (content.startsWith('---') || content.startsWith('+++') || content.startsWith('@@')) {
+            content = content
+                .split('\n')
+                .filter(line => !line.startsWith('---') && !line.startsWith('+++') && !line.startsWith('@@'))
+                .map(line => {
+                    if (line.startsWith('+')) { return line.substring(1); }
+                    if (line.startsWith('-')) { return null; }
+                    if (line.startsWith(' ')) { return line.substring(1); }
+                    return line;
+                })
+                .filter((line): line is string => line !== null)
+                .join('\n');
+        }
         return new TextEncoder().encode(content);
     }
 

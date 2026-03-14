@@ -126,11 +126,39 @@ tests/
         assert "src/" in prompt
         assert "main.py" in prompt
 
-    def test_prompt_limits_context_results(self):
-        """Test that context is limited to top 5 results."""
+    def test_prompt_limits_context_by_token_budget(self):
+        """Test that context is limited by token budget, not a hardcoded count."""
         task = Task(task_id="task_1", description="Test task")
 
-        # Create 10 context items
+        # Create 10 context items with large content that will exceed budget
+        context = [
+            {
+                "file_path": f"file_{i}.py",
+                "line_start": i,
+                "line_end": i + 10,
+                "content": f"def function_{i}():\n    pass\n" * 100,
+                "score": 0.9 - (i * 0.05)
+            }
+            for i in range(10)
+        ]
+
+        # Use a small budget so not all items fit
+        prompt = build_execution_prompt(
+            task=task,
+            context=context,
+            tools=["read_file"],
+            context_token_budget=500,
+        )
+
+        # First item should always be included
+        assert "file_0.py" in prompt
+        # With a small budget, later items should be excluded
+        assert "file_9.py" not in prompt
+
+    def test_prompt_small_context_fits_entirely(self):
+        """Test that small context items all fit within default budget."""
+        task = Task(task_id="task_1", description="Test task")
+
         context = [
             {
                 "file_path": f"file_{i}.py",
@@ -148,12 +176,9 @@ tests/
             tools=["read_file"]
         )
 
-        # Verify only top 5 are included
-        assert "file_0.py" in prompt
-        assert "file_4.py" in prompt
-        # Items 5-9 should not be included
-        assert "file_5.py" not in prompt
-        assert "file_9.py" not in prompt
+        # All small items should fit within the default 3500 token budget
+        for i in range(10):
+            assert f"file_{i}.py" in prompt
 
     def test_prompt_includes_task_dependencies(self):
         """Test that task dependencies are included when present."""

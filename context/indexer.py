@@ -5,9 +5,10 @@ This module provides the ContextEngine class for indexing workspace files,
 generating embeddings, and performing semantic search.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import os
 import glob
+import hashlib
 import logging
 from dataclasses import dataclass
 
@@ -70,6 +71,11 @@ class ContextEngine:
         )
 
         self.collection_prefix = vector_db_config.get("collection_prefix", "workspace")
+
+        # Track file content hashes for incremental indexing
+        # Maps file_path -> content_hash (SHA256)
+        self._file_hashes: Dict[str, str] = {}
+
         logger.info("ContextEngine initialized successfully")
 
     def index_workspace(
@@ -137,12 +143,15 @@ class ContextEngine:
             logger.warning("No files to index after filtering")
             return
 
-        # Step 3: Chunk files
+        # Step 3: Chunk files and record file hashes
         logger.info("Chunking files...")
         all_chunks = []
+        new_file_hashes: Dict[str, str] = {}
         for file_path in filtered_files:
             try:
-                chunks = self._chunk_file_from_path(file_path)
+                content = self._read_file_content(file_path)
+                new_file_hashes[file_path] = self._compute_file_hash(content)
+                chunks = chunk_file(file_path, content)
                 all_chunks.extend(chunks)
             except Exception as e:
                 logger.warning(f"Failed to chunk file {file_path}: {e}")
@@ -161,6 +170,9 @@ class ContextEngine:
         # Step 5: Store in vector database
         logger.info("Storing embeddings in vector database...")
         self._store_chunks(all_chunks, workspace_path)
+
+        # Step 6: Record file hashes for incremental indexing
+        self._file_hashes = new_file_hashes
 
         logger.info(
             f"Indexing complete: {len(filtered_files)} files, "
@@ -220,6 +232,198 @@ class ContextEngine:
                 filtered_files.append(file_path)
 
         return filtered_files
+    @staticmethod
+    def _compute_file_hash(content: str) -> str:
+        """
+        Compute SHA256 hash of file content.
+
+        Args:
+            content: File content string
+
+        Returns:
+            Hexadecimal hash string
+        """
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _read_file_content(file_path: str) -> str:
+        """
+        Read file content with encoding fallback.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            File content as string
+
+        Raises:
+            Exception: If file cannot be read with any encoding
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except UnicodeDecodeError:
+            with open(file_path, 'r', encoding='latin-1') as f:
+                return f.read()
+
+    def _get_collection_name(self, workspace_path: str) -> str:
+        """
+        Get the vector DB collection name for a workspace.
+
+        Args:
+            workspace_path: Root workspace path
+
+        Returns:
+            Collection name string
+        """
+        workspace_name = os.path.basename(os.path.abspath(workspace_path))
+        return f"{self.collection_prefix}_{workspace_name}"
+
+    def incremental_index(
+        self,
+        workspace_path: str,
+        file_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
+        max_file_size: int = 1_000_000,
+        batch_size: int = 32
+    ) -> Dict[str, Any]:
+        """
+        Incrementally index only changed, new, or deleted files.
+
+        Compares current file hashes with stored hashes from the last
+        index_workspace() or incremental_index() call. Only re-indexes
+        files whose content has changed, adds new files, and removes
+        embeddings for deleted files.
+
+        If no previous index exists (no stored hashes), falls back to
+        a full index_workspace() call.
+
+        Args:
+            workspace_path: Root directory of the workspace
+            file_patterns: List of glob patterns for files to include
+            exclude_patterns: List of glob patterns for files/dirs to exclude
+            max_file_size: Maximum file size in bytes (default: 1MB)
+            batch_size: Batch size for embedding generation (default: 32)
+
+        Returns:
+            Dictionary with stats:
+                - added: number of new files indexed
+                - modified: number of modified files re-indexed
+                - deleted: number of deleted files removed
+                - unchanged: number of unchanged files skipped
+
+        Raises:
+            ValueError: If workspace_path doesn't exist
+        """
+        if not os.path.exists(workspace_path):
+            raise ValueError(f"Workspace path does not exist: {workspace_path}")
+
+        # If no previous hashes, do a full index
+        if not self._file_hashes:
+            logger.info("No previous index found, performing full index")
+            self.index_workspace(
+                workspace_path=workspace_path,
+                file_patterns=file_patterns,
+                exclude_patterns=exclude_patterns,
+                max_file_size=max_file_size,
+                batch_size=batch_size
+            )
+            return {
+                "added": len(self._file_hashes),
+                "modified": 0,
+                "deleted": 0,
+                "unchanged": 0
+            }
+
+        logger.info(f"Starting incremental indexing: {workspace_path}")
+
+        # Default patterns
+        if file_patterns is None:
+            file_patterns = [
+                "**/*.py", "**/*.js", "**/*.ts", "**/*.tsx", "**/*.jsx",
+                "**/*.java", "**/*.cpp", "**/*.c", "**/*.h",
+                "**/*.go", "**/*.rs", "**/*.md"
+            ]
+        if exclude_patterns is None:
+            exclude_patterns = [
+                "**/node_modules/**", "**/venv/**", "**/.venv/**",
+                "**/.git/**", "**/dist/**", "**/build/**",
+                "**/__pycache__/**", "**/.pytest_cache/**"
+            ]
+
+        # Discover and filter current files
+        current_files = self._discover_files(workspace_path, file_patterns, exclude_patterns)
+        current_files = self._filter_by_size(current_files, max_file_size)
+        current_file_set: Set[str] = set(current_files)
+        previous_file_set: Set[str] = set(self._file_hashes.keys())
+
+        # Categorize files
+        new_files: List[str] = []
+        modified_files: List[str] = []
+        deleted_files: List[str] = list(previous_file_set - current_file_set)
+        unchanged_count = 0
+
+        for file_path in current_files:
+            try:
+                content = self._read_file_content(file_path)
+                current_hash = self._compute_file_hash(content)
+            except Exception as e:
+                logger.warning(f"Failed to read {file_path}: {e}")
+                continue
+
+            if file_path not in self._file_hashes:
+                new_files.append(file_path)
+            elif self._file_hashes[file_path] != current_hash:
+                modified_files.append(file_path)
+            else:
+                unchanged_count += 1
+
+        logger.info(
+            f"Incremental index: {len(new_files)} new, {len(modified_files)} modified, "
+            f"{len(deleted_files)} deleted, {unchanged_count} unchanged"
+        )
+
+        collection_name = self._get_collection_name(workspace_path)
+
+        # Remove embeddings for deleted and modified files
+        files_to_remove = deleted_files + modified_files
+        for file_path in files_to_remove:
+            try:
+                self.vector_db.delete_by_file_path(collection_name, file_path)
+                if file_path in self._file_hashes:
+                    del self._file_hashes[file_path]
+            except Exception as e:
+                logger.warning(f"Failed to remove embeddings for {file_path}: {e}")
+
+        # Index new and modified files
+        files_to_index = new_files + modified_files
+        if files_to_index:
+            all_chunks = []
+            for file_path in files_to_index:
+                try:
+                    content = self._read_file_content(file_path)
+                    self._file_hashes[file_path] = self._compute_file_hash(content)
+                    chunks = chunk_file(file_path, content)
+                    all_chunks.extend(chunks)
+                except Exception as e:
+                    logger.warning(f"Failed to chunk file {file_path}: {e}")
+                    continue
+
+            if all_chunks:
+                self._generate_embeddings_batch(all_chunks, batch_size)
+                self._store_chunks(all_chunks, workspace_path)
+
+        stats = {
+            "added": len(new_files),
+            "modified": len(modified_files),
+            "deleted": len(deleted_files),
+            "unchanged": unchanged_count
+        }
+
+        logger.info(f"Incremental indexing complete: {stats}")
+        return stats
+
+
 
     def _filter_by_size(
         self,
@@ -263,17 +467,7 @@ class ContextEngine:
         Raises:
             Exception: If file cannot be read
         """
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-        except UnicodeDecodeError:
-            # Try with latin-1 encoding for binary-like files
-            try:
-                with open(file_path, 'r', encoding='latin-1') as f:
-                    content = f.read()
-            except Exception as e:
-                raise Exception(f"Failed to read file with any encoding: {e}")
-
+        content = self._read_file_content(file_path)
         return chunk_file(file_path, content)
 
     def _generate_embeddings_batch(
@@ -323,9 +517,7 @@ class ContextEngine:
             chunks: List of FileChunk objects with embeddings
             workspace_path: Root workspace path for collection naming
         """
-        # Create collection name from workspace path
-        workspace_name = os.path.basename(os.path.abspath(workspace_path))
-        collection_name = f"{self.collection_prefix}_{workspace_name}"
+        collection_name = self._get_collection_name(workspace_path)
 
         # Create collection if it doesn't exist
         if not self.vector_db.collection_exists(collection_name):
@@ -396,8 +588,7 @@ class ContextEngine:
         )[0].tolist()
 
         # Get collection name
-        workspace_name = os.path.basename(os.path.abspath(workspace_path))
-        collection_name = f"{self.collection_prefix}_{workspace_name}"
+        collection_name = self._get_collection_name(workspace_path)
 
         # Check if collection exists
         if not self.vector_db.collection_exists(collection_name):

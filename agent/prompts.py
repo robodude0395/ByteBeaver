@@ -7,6 +7,13 @@ all necessary context for the LLM to generate appropriate actions.
 
 from typing import List, Dict, Any, Optional
 from agent.models import Task
+from utils.tokens import count_tokens, fit_context_to_budget
+
+# Token budget constants for 8192-token context window
+# Leave ~2000 tokens for LLM generation
+TOTAL_PROMPT_BUDGET = 6000
+CONTEXT_TOKEN_BUDGET = 3500
+MAX_CHUNK_TOKENS = 800
 
 
 def build_execution_prompt(
@@ -14,7 +21,8 @@ def build_execution_prompt(
     context: List[Dict[str, Any]],
     tools: List[str],
     workspace_tree: Optional[str] = None,
-    user_goal: Optional[str] = None
+    user_goal: Optional[str] = None,
+    context_token_budget: int = CONTEXT_TOKEN_BUDGET,
 ) -> str:
     """
     Build structured prompt for task execution.
@@ -87,22 +95,28 @@ def build_execution_prompt(
         ])
 
     # Relevant code context (Requirement 11.4)
+    # Apply token budget to context items (Requirements 1.3, 15.1)
     if context:
-        prompt_parts.append("RELEVANT CODE CONTEXT:")
-        # Limit to top 5 results to stay within context window
-        for ctx in context[:5]:
-            file_path = ctx.get('file_path', 'unknown')
-            line_start = ctx.get('line_start', 0)
-            line_end = ctx.get('line_end', 0)
-            content = ctx.get('content', '')
+        budgeted_context = fit_context_to_budget(
+            context,
+            token_budget=context_token_budget,
+            max_chunk_tokens=MAX_CHUNK_TOKENS,
+        )
+        if budgeted_context:
+            prompt_parts.append("RELEVANT CODE CONTEXT:")
+            for ctx in budgeted_context:
+                file_path = ctx.get('file_path', 'unknown')
+                line_start = ctx.get('line_start', 0)
+                line_end = ctx.get('line_end', 0)
+                content = ctx.get('content', '')
 
-            prompt_parts.extend([
-                f"\n{file_path} (lines {line_start}-{line_end}):",
-                "```",
-                content,
-                "```",
-                ""
-            ])
+                prompt_parts.extend([
+                    f"\n{file_path} (lines {line_start}-{line_end}):",
+                    "```",
+                    content,
+                    "```",
+                    ""
+                ])
 
     # Available tools (Requirement 11.6)
     prompt_parts.extend([
@@ -294,13 +308,17 @@ def build_planning_prompt(
         "}",
         "",
         "Guidelines:",
+        "- Create the MINIMUM number of tasks needed. One task per file is usually enough.",
+        "- Do NOT create multiple tasks that do the same thing in different ways.",
+        "- If the user asks for one file, create exactly ONE task.",
+        "- Do NOT generate alternative implementations or variations unless explicitly asked.",
         "- Create atomic tasks that can be completed independently",
         "- Specify dependencies when tasks must be done in order (use task_id)",
         "- Estimate complexity based on scope:",
         "  - low: Single file, simple changes",
         "  - medium: 2-5 files, moderate complexity",
         "  - high: 6+ files, complex refactoring or new features",
-        "- Include tasks for testing if appropriate",
+        "- Include tasks for testing only if the user explicitly asks for tests",
         "- Keep task descriptions clear and actionable",
         "- Ensure task_id values are unique (task_1, task_2, etc.)",
         "",

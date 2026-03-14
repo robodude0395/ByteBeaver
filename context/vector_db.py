@@ -14,6 +14,8 @@ from qdrant_client.models import (
     VectorParams,
     PointStruct,
     Filter,
+    FieldCondition,
+    MatchValue,
     SearchParams,
 )
 
@@ -231,6 +233,32 @@ class VectorDB:
         """
         self.client.delete_collection(collection_name)
         logger.info(f"Deleted collection: {collection_name}")
+    def delete_by_file_path(
+        self,
+        collection_name: str,
+        file_path: str
+    ) -> None:
+        """
+        Delete all points associated with a specific file path.
+
+        Args:
+            collection_name: Name of the collection
+            file_path: The file_path value in point payloads to match for deletion
+        """
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="file_path",
+                        match=MatchValue(value=file_path)
+                    )
+                ]
+            )
+        )
+        logger.debug(f"Deleted points for file_path={file_path} from {collection_name}")
+
+
 
     def collection_exists(self, collection_name: str) -> bool:
         """

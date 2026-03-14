@@ -7,16 +7,18 @@ those directives through the tool system.
 """
 
 import re
+import json
 import logging
 import traceback
 import uuid
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator
 from agent.models import (
     Task, Plan, TaskResult, FileChange, ToolCall,
     ExecutionResult, ChangeType, TaskStatus
 )
 from llm.client import LLMClient
 from tools.base import ToolSystem
+from server.validation import validate_llm_output_path
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +235,75 @@ class Executor:
             error="Unknown error during task execution"
         )
 
+    def execute_task_streaming(
+        self,
+        task: Task,
+        workspace_path: str,
+        user_goal: Optional[str] = None
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Execute a single task with streaming LLM output.
+
+        Yields SSE-compatible event dicts as tokens arrive from the LLM,
+        then yields the final parsed result (changes, tool calls).
+
+        Event types yielded:
+        - {"event": "token", "data": "<token_text>"}
+        - {"event": "result", "data": {...}, "task_result": TaskResult}
+        - {"event": "error", "data": "<error_message>"}
+
+        Args:
+            task: Task to execute
+            workspace_path: Root directory for operations
+            user_goal: Optional user's original goal/prompt
+
+        Yields:
+            Dicts representing SSE events
+        """
+        logger.info("Executing task (streaming) %s: %s", task.task_id, task.description)
+
+        context = self._retrieve_context(task, workspace_path) if self.context_engine else []
+        prompt = self._build_prompt(task, context, user_goal, workspace_path)
+
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            full_response = ""
+
+            for token in self.llm_client.stream_complete(messages, temperature=0.2):
+                full_response += token
+                yield {"event": "token", "data": token}
+
+            # Parse the accumulated response
+            changes, tool_calls = self.parse_llm_response(full_response)
+
+            for tool_call in tool_calls:
+                self._execute_tool_call(tool_call)
+
+            result = TaskResult(
+                task_id=task.task_id,
+                status="success",
+                changes=changes,
+                tool_calls=tool_calls
+            )
+            yield {
+                "event": "result",
+                "data": {
+                    "task_id": result.task_id,
+                    "status": result.status,
+                    "changes_count": len(result.changes),
+                },
+                "task_result": result,
+            }
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error("Streaming failed for task %s: %s", task.task_id, e, exc_info=True)
+            yield {"event": "error", "data": str(e)}
+
+        except Exception as e:
+            logger.error("Unexpected error streaming task %s: %s", task.task_id, e, exc_info=True)
+            yield {"event": "error", "data": str(e)}
+
+
     def parse_llm_response(self, response: str) -> tuple[List[FileChange], List[ToolCall]]:
         """
         Parse LLM response to extract directives.
@@ -308,7 +379,13 @@ class Executor:
 
         Returns:
             FileChange object for preview
+
+        Raises:
+            SecurityError: If file_path escapes workspace boundary
         """
+        # Validate LLM-provided path before any filesystem access
+        validate_llm_output_path(file_path, self.tool_system.workspace_path)
+
         # Try to read original content if file exists
         original_content = None
         try:
@@ -343,7 +420,11 @@ class Executor:
         Raises:
             FileNotFoundError: If file doesn't exist
             ValueError: If diff cannot be applied
+            SecurityError: If file_path escapes workspace boundary
         """
+        # Validate LLM-provided path before any filesystem access
+        validate_llm_output_path(file_path, self.tool_system.workspace_path)
+
         # Read original content
         original_content = self.tool_system.filesystem.read_file(file_path)
 

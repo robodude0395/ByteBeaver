@@ -70,6 +70,11 @@ export interface CancelResponse {
     status: string;
 }
 
+export interface StreamEvent {
+    event: string;
+    data: any;
+}
+
 // Agent client class
 
 export class AgentClient {
@@ -181,6 +186,84 @@ export class AgentClient {
             return false;
         }
     }
+
+    /**
+     * Send a prompt and receive streaming SSE tokens.
+     *
+     * Calls POST /agent/prompt/stream and parses the SSE event stream.
+     * The callback is invoked for each event with {event, data}.
+     *
+     * Event types:
+     * - session: {session_id: string}
+     * - plan: PlanInfo
+     * - token: string (a single LLM token)
+     * - task_result: {task_id, status, changes_count}
+     * - task_error: {task_id, error}
+     * - done: {status, session_id}
+     * - error: {error: string}
+     */
+    async sendPromptStreaming(
+        prompt: string,
+        workspacePath: string,
+        onEvent: (event: StreamEvent) => void,
+        sessionId?: string
+    ): Promise<void> {
+        const payload: PromptRequest = {
+            prompt,
+            workspace_path: workspacePath,
+        };
+        if (sessionId) {
+            payload.session_id = sessionId;
+        }
+
+        const response = await this.client.post(
+            '/agent/prompt/stream',
+            payload,
+            {
+                responseType: 'stream',
+                adapter: 'fetch' as any,
+                timeout: 0, // no timeout for streaming
+            }
+        );
+
+        const reader = (response.data as ReadableStream<Uint8Array>).getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) { break; }
+
+                buffer += decoder.decode(value, { stream: true });
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop() ?? '';
+
+                for (const part of parts) {
+                    if (!part.trim()) { continue; }
+                    let eventType = 'message';
+                    let dataStr = '';
+                    for (const line of part.split('\n')) {
+                        if (line.startsWith('event: ')) {
+                            eventType = line.slice(7);
+                        } else if (line.startsWith('data: ')) {
+                            dataStr = line.slice(6);
+                        }
+                    }
+                    if (!dataStr) { continue; }
+                    try {
+                        const data = JSON.parse(dataStr);
+                        onEvent({ event: eventType, data });
+                    } catch {
+                        onEvent({ event: eventType, data: dataStr });
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
 
     private handleError(error: unknown, context: string): Error {
         if (error instanceof AxiosError) {

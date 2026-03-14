@@ -1,12 +1,23 @@
 """FastAPI server for agent API."""
+import json
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List, Dict
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, field_validator
+from typing import Optional, List, Dict, Any
 import uuid
 from datetime import datetime
 import logging
 import os
+
+from server.validation import (
+    validate_prompt,
+    validate_workspace_path,
+    validate_session_id,
+    rate_limiter,
+    MAX_PROMPT_LENGTH,
+)
 
 from agent.models import (
     AgentSession, SessionStatus, FileChange, ChangeType,
@@ -19,6 +30,7 @@ from tools.base import ToolSystem
 from context.indexer import ContextEngine
 from config import Config
 from utils.logging import setup_logging
+from utils.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +138,21 @@ class PromptRequest(BaseModel):
     workspace_path: str
     session_id: Optional[str] = None
 
+    @field_validator("prompt")
+    @classmethod
+    def check_prompt(cls, v: str) -> str:
+        return validate_prompt(v)
+
+    @field_validator("workspace_path")
+    @classmethod
+    def check_workspace_path(cls, v: str) -> str:
+        return validate_workspace_path(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return validate_session_id(v)
+
 
 class TaskInfo(BaseModel):
     """Task information."""
@@ -153,6 +180,7 @@ class FileChangeInfo(BaseModel):
     file_path: str
     change_type: str
     diff: str
+    new_content: Optional[str] = None
 
 
 class StatusResponse(BaseModel):
@@ -190,10 +218,86 @@ class CancelResponse(BaseModel):
     status: str
 
 
+class NotifyAppliedRequest(BaseModel):
+    """Request to notify that changes were applied client-side."""
+    session_id: str
+    change_ids: List[str]
+
+
+
+def _check_llm_health() -> Dict[str, Any]:
+    """Check LLM server connectivity."""
+    if llm_client is None:
+        return {"status": "unavailable", "message": "LLM client not initialised"}
+    try:
+        url = f"{llm_client.base_url}/models"
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "message": str(e)}
+
+
+def _check_vector_db_health() -> Dict[str, Any]:
+    """Check vector database connectivity."""
+    if context_engine is None:
+        return {"status": "unavailable", "message": "Context engine not initialised"}
+    try:
+        # Listing collections is a lightweight connectivity check
+        context_engine.vector_db.client.get_collections()
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "message": str(e)}
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    """Quick health check – returns overall status based on component health."""
+    llm_health = _check_llm_health()
+    vdb_health = _check_vector_db_health()
+
+    components_ok = (
+        llm_health["status"] in ("healthy", "unavailable")
+        and vdb_health["status"] in ("healthy", "unavailable")
+    )
+    overall = "healthy" if components_ok else "degraded"
+
+    return {
+        "status": overall,
+        "timestamp": datetime.now().isoformat(),
+        "components": {
+            "llm_server": llm_health["status"],
+            "vector_db": vdb_health["status"],
+        },
+    }
+
+
+@app.get("/health/detailed")
+async def health_check_detailed():
+    """Detailed health check with per-component diagnostics."""
+    llm_health = _check_llm_health()
+    vdb_health = _check_vector_db_health()
+
+    components_ok = (
+        llm_health["status"] in ("healthy", "unavailable")
+        and vdb_health["status"] in ("healthy", "unavailable")
+    )
+    overall = "healthy" if components_ok else "degraded"
+
+    return {
+        "status": overall,
+        "timestamp": datetime.now().isoformat(),
+        "components": {
+            "llm_server": llm_health,
+            "vector_db": vdb_health,
+        },
+    }
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Return a snapshot of all collected metrics."""
+    return metrics.snapshot()
 
 
 
@@ -211,6 +315,9 @@ async def process_prompt(request: PromptRequest):
         Response with session ID and plan
     """
     global llm_client, context_engine, config, indexed_workspaces
+
+    # Rate limiting
+    rate_limiter.check_or_raise("/agent/prompt")
 
     # Check if LLM client is initialized
     if llm_client is None:
@@ -343,6 +450,160 @@ async def process_prompt(request: PromptRequest):
             detail=f"Failed to process prompt: {str(e)}"
         )
 
+@app.post("/agent/prompt/stream")
+async def process_prompt_stream(request: PromptRequest):
+    """Stream LLM tokens as Server-Sent Events during prompt execution.
+
+    Creates a session, generates a plan, then streams tokens from the LLM
+    for each task. Events are sent as SSE with types: session, plan, token,
+    task_result, done, error.
+
+    Args:
+        request: Prompt request with user input
+
+    Returns:
+        StreamingResponse with text/event-stream content type
+    """
+    global llm_client, context_engine, config, indexed_workspaces
+
+    # Rate limiting
+    rate_limiter.check_or_raise("/agent/prompt/stream")
+
+    if llm_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM client not initialized. Check server logs."
+        )
+
+    def event_stream():
+        # Index workspace if needed
+        if context_engine and request.workspace_path not in indexed_workspaces:
+            try:
+                file_patterns = None
+                exclude_patterns = None
+                if config:
+                    file_patterns = config.context.file_patterns
+                    exclude_patterns = config.context.exclude_patterns
+                context_engine.index_workspace(
+                    workspace_path=request.workspace_path,
+                    file_patterns=file_patterns,
+                    exclude_patterns=exclude_patterns
+                )
+                indexed_workspaces.add(request.workspace_path)
+            except Exception as e:
+                logger.error(f"Failed to index workspace: {e}", exc_info=True)
+
+        # Create session
+        session_id = request.session_id or str(uuid.uuid4())
+        if session_id in sessions:
+            session = sessions[session_id]
+            session.updated_at = datetime.now()
+        else:
+            session = AgentSession(
+                session_id=session_id,
+                workspace_path=request.workspace_path,
+                status=SessionStatus.PLANNING
+            )
+            sessions[session_id] = session
+
+        yield f"event: session\ndata: {json.dumps({'session_id': session_id})}\n\n"
+
+        try:
+            planner = Planner(llm_client=llm_client)
+            workspace_context = {}
+            if context_engine:
+                try:
+                    file_tree = context_engine.get_file_tree(request.workspace_path)
+                    workspace_context["file_tree"] = file_tree
+                except Exception as e:
+                    logger.warning(f"Failed to get file tree: {e}")
+
+            plan = planner.generate_plan(
+                prompt=request.prompt,
+                workspace_context=workspace_context if workspace_context else None
+            )
+            session.plan = plan
+            session.status = SessionStatus.EXECUTING
+            session.updated_at = datetime.now()
+
+            plan_data = {
+                "tasks": [
+                    {
+                        "task_id": t.task_id,
+                        "description": t.description,
+                        "dependencies": t.dependencies,
+                        "estimated_complexity": t.estimated_complexity.value,
+                    }
+                    for t in plan.tasks
+                ]
+            }
+            yield f"event: plan\ndata: {json.dumps(plan_data)}\n\n"
+
+            # Execute tasks with streaming
+            tool_system = ToolSystem(workspace_path=request.workspace_path)
+            executor = Executor(
+                llm_client=llm_client,
+                tool_system=tool_system,
+                context_engine=context_engine
+            )
+
+            all_changes = []
+            completed = []
+            failed = []
+
+            while (task := plan.get_next_task()) is not None:
+                task.status = TaskStatus.IN_PROGRESS
+
+                for evt in executor.execute_task_streaming(
+                    task, request.workspace_path, user_goal=request.prompt
+                ):
+                    if evt["event"] == "token":
+                        yield f"event: token\ndata: {json.dumps(evt['data'])}\n\n"
+                    elif evt["event"] == "result":
+                        task.status = TaskStatus.COMPLETED
+                        completed.append(task.task_id)
+                        task_result = evt.get("task_result")
+                        if task_result:
+                            all_changes.extend(task_result.changes)
+                        yield f"event: task_result\ndata: {json.dumps(evt['data'])}\n\n"
+                    elif evt["event"] == "error":
+                        task.status = TaskStatus.FAILED
+                        failed.append(task.task_id)
+                        yield f"event: task_error\ndata: {json.dumps({'task_id': task.task_id, 'error': evt['data']})}\n\n"
+
+            # Build final execution result
+            status = "completed" if not failed else "partial" if completed else "failed"
+            execution_result = ExecutionResult(
+                plan_id=plan.plan_id,
+                status=status,
+                completed_tasks=completed,
+                failed_tasks=failed,
+                all_changes=all_changes
+            )
+            session.execution_result = execution_result
+            session.status = SessionStatus.COMPLETED if status != "failed" else SessionStatus.ERROR
+            session.updated_at = datetime.now()
+
+            yield f"event: done\ndata: {json.dumps({'status': status, 'session_id': session_id})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            session.status = SessionStatus.ERROR
+            session.error = str(e)
+            session.updated_at = datetime.now()
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 
 
 
@@ -362,6 +623,12 @@ async def get_status(session_id: str):
     Raises:
         HTTPException: If session not found
     """
+    # Validate session_id format
+    try:
+        validate_session_id(session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -382,7 +649,8 @@ async def get_status(session_id: str):
                 change_id=change.change_id,
                 file_path=change.file_path,
                 change_type=change.change_type.value,
-                diff=change.diff
+                diff=change.diff,
+                new_content=change.new_content
             )
             for change in session.execution_result.all_changes
             if not change.applied
@@ -510,3 +778,35 @@ async def cancel_session(request: CancelRequest):
     session.updated_at = datetime.now()
 
     return CancelResponse(status="cancelled")
+
+@app.post("/agent/notify_applied")
+async def notify_applied(request: NotifyAppliedRequest):
+    """Receive notification that the client applied changes locally.
+
+    Marks the corresponding FileChange objects as applied in session state.
+
+    Args:
+        request: Request with session ID and list of applied change IDs
+
+    Returns:
+        Count of changes marked as applied
+
+    Raises:
+        HTTPException: If session not found
+    """
+    if request.session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[request.session_id]
+    marked_count = 0
+
+    if session.execution_result:
+        for change in session.execution_result.all_changes:
+            if change.change_id in request.change_ids:
+                change.applied = True
+                marked_count += 1
+
+    session.updated_at = datetime.now()
+
+    return {"marked_applied": marked_count}
+

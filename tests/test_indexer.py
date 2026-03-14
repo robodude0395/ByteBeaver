@@ -650,3 +650,248 @@ class TestSearchPropertyBased:
             # Workspace not indexed is acceptable
             if "Workspace not indexed" not in str(e):
                 raise
+
+
+class TestIncrementalIndexing:
+    """Tests for incremental indexing functionality."""
+
+    def test_incremental_index_first_call_does_full_index(self, context_engine, temp_workspace):
+        """Test that incremental_index falls back to full index when no previous hashes exist."""
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py", "**/*.js"],
+            batch_size=32
+        )
+
+        # Should report all files as added (full index)
+        assert stats["added"] > 0
+        assert stats["modified"] == 0
+        assert stats["deleted"] == 0
+        assert stats["unchanged"] == 0
+
+        # Verify collection was created and has data
+        collection_name = context_engine._get_collection_name(temp_workspace)
+        assert context_engine.vector_db.collection_exists(collection_name)
+        info = context_engine.vector_db.get_collection_info(collection_name)
+        assert info["points_count"] > 0
+
+    def test_incremental_index_unchanged_files_skipped(self, context_engine, temp_workspace):
+        """Test that unchanged files are skipped on second call."""
+        # First: full index
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        # Second: incremental (nothing changed)
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        assert stats["added"] == 0
+        assert stats["modified"] == 0
+        assert stats["deleted"] == 0
+        assert stats["unchanged"] >= 2  # main.py and utils.py
+
+    def test_incremental_index_detects_modified_file(self, context_engine, temp_workspace):
+        """Test that modified files are re-indexed."""
+        # Full index first
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        collection_name = context_engine._get_collection_name(temp_workspace)
+        info_before = context_engine.vector_db.get_collection_info(collection_name)
+
+        # Modify a file
+        main_py = os.path.join(temp_workspace, "src", "main.py")
+        with open(main_py, "w") as f:
+            f.write("""
+def main():
+    print("Modified content!")
+    return 42
+
+def new_function():
+    return "brand new"
+""")
+
+        # Incremental index
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        assert stats["modified"] == 1
+        assert stats["unchanged"] >= 1  # utils.py unchanged
+
+        # Search should find the new content
+        results = context_engine.search(
+            query="brand new function modified",
+            workspace_path=temp_workspace,
+            top_k=10,
+            min_score=0.3
+        )
+        assert len(results) > 0
+
+    def test_incremental_index_detects_new_file(self, context_engine, temp_workspace):
+        """Test that new files are indexed."""
+        # Full index first
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        # Add a new file
+        new_file = os.path.join(temp_workspace, "src", "new_module.py")
+        with open(new_file, "w") as f:
+            f.write("""
+def calculate_fibonacci(n):
+    if n <= 1:
+        return n
+    return calculate_fibonacci(n - 1) + calculate_fibonacci(n - 2)
+""")
+
+        # Incremental index
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        assert stats["added"] == 1
+        assert stats["modified"] == 0
+        assert stats["unchanged"] >= 2
+
+    def test_incremental_index_detects_deleted_file(self, context_engine, temp_workspace):
+        """Test that deleted files have their embeddings removed."""
+        # Full index first
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        # Delete a file
+        utils_py = os.path.join(temp_workspace, "src", "utils.py")
+        os.remove(utils_py)
+
+        # Incremental index
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        assert stats["deleted"] == 1
+        assert stats["unchanged"] >= 1  # main.py still there
+
+    def test_incremental_index_nonexistent_workspace_raises_error(self, context_engine):
+        """Test that incremental_index raises error for non-existent workspace."""
+        # Need to set some hashes so it doesn't fall back to full index
+        context_engine._file_hashes = {"fake": "hash"}
+        with pytest.raises(ValueError, match="Workspace path does not exist"):
+            context_engine.incremental_index(workspace_path="/nonexistent/path")
+
+    def test_incremental_index_combined_changes(self, context_engine, temp_workspace):
+        """Test incremental index with simultaneous add, modify, and delete."""
+        # Full index first
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py", "**/*.js"],
+            batch_size=32
+        )
+
+        # Modify main.py
+        main_py = os.path.join(temp_workspace, "src", "main.py")
+        with open(main_py, "w") as f:
+            f.write("def main(): return 'changed'\n")
+
+        # Delete utils.py
+        os.remove(os.path.join(temp_workspace, "src", "utils.py"))
+
+        # Add new file
+        with open(os.path.join(temp_workspace, "extra.py"), "w") as f:
+            f.write("x = 1\n")
+
+        stats = context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py", "**/*.js"],
+            batch_size=32
+        )
+
+        assert stats["added"] == 1
+        assert stats["modified"] == 1
+        assert stats["deleted"] == 1
+        # app.js should be unchanged
+        assert stats["unchanged"] >= 1
+
+    def test_file_hashes_updated_after_incremental_index(self, context_engine, temp_workspace):
+        """Test that _file_hashes dict is properly maintained."""
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        initial_hash_count = len(context_engine._file_hashes)
+        assert initial_hash_count >= 2
+
+        # Add a file
+        with open(os.path.join(temp_workspace, "new.py"), "w") as f:
+            f.write("y = 2\n")
+
+        context_engine.incremental_index(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        assert len(context_engine._file_hashes) == initial_hash_count + 1
+
+
+class TestVectorDBDeleteByFilePath:
+    """Tests for VectorDB.delete_by_file_path."""
+
+    def test_delete_by_file_path_removes_points(self, context_engine, temp_workspace):
+        """Test that delete_by_file_path removes the correct points."""
+        # Index workspace
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        collection_name = context_engine._get_collection_name(temp_workspace)
+        info_before = context_engine.vector_db.get_collection_info(collection_name)
+        assert info_before["points_count"] > 0
+
+        # Delete points for one file
+        main_py = os.path.join(temp_workspace, "src", "main.py")
+        context_engine.vector_db.delete_by_file_path(collection_name, main_py)
+
+        info_after = context_engine.vector_db.get_collection_info(collection_name)
+        assert info_after["points_count"] < info_before["points_count"]
+
+    def test_delete_by_file_path_nonexistent_file_no_error(self, context_engine, temp_workspace):
+        """Test that deleting a non-existent file path doesn't raise an error."""
+        context_engine.index_workspace(
+            workspace_path=temp_workspace,
+            file_patterns=["**/*.py"],
+            batch_size=32
+        )
+
+        collection_name = context_engine._get_collection_name(temp_workspace)
+        info_before = context_engine.vector_db.get_collection_info(collection_name)
+
+        # Delete non-existent file — should not raise
+        context_engine.vector_db.delete_by_file_path(collection_name, "/no/such/file.py")
+
+        info_after = context_engine.vector_db.get_collection_info(collection_name)
+        assert info_after["points_count"] == info_before["points_count"]

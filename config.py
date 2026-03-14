@@ -122,6 +122,14 @@ class Config:
         # Apply environment variable overrides
         data = cls._apply_env_overrides(data)
 
+        # Validate configuration values
+        from server.validation import validate_config_values
+        config_errors = validate_config_values(data)
+        if config_errors:
+            raise ValueError(
+                "Configuration validation errors: " + "; ".join(config_errors)
+            )
+
         # Validate required sections
         required_sections = ['llm', 'agent', 'context', 'tools', 'performance']
         for section in required_sections:

@@ -8,6 +8,7 @@ HOST="${AGENT_HOST:-0.0.0.0}"
 PORT="${AGENT_PORT:-8000}"
 LOG_LEVEL="${AGENT_LOG_LEVEL:-info}"
 RELOAD="${RELOAD:-false}"
+WORKERS="${AGENT_WORKERS:-1}"
 
 # Set PYTHONPATH to include project root
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
@@ -41,18 +42,22 @@ echo "Starting Agent Server..."
 echo "Host: $HOST"
 echo "Port: $PORT"
 echo "Log level: $LOG_LEVEL"
+echo "Workers: $WORKERS"
 echo ""
 
 # Run uvicorn
 if [ "$RELOAD" = "true" ]; then
+    # Development mode: single worker with auto-reload
     uvicorn server.api:app \
         --host "$HOST" \
         --port "$PORT" \
         --log-level "$LOG_LEVEL" \
         --reload
 else
+    # Production mode
     uvicorn server.api:app \
         --host "$HOST" \
         --port "$PORT" \
-        --log-level "$LOG_LEVEL"
+        --log-level "$LOG_LEVEL" \
+        --workers "$WORKERS"
 fi

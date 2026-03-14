@@ -1,195 +1,178 @@
-# Local Offline Coding Agent
+# 🦫 Byte Beaver
 
-A fully self-hosted AI coding agent that runs on a remote desktop machine and integrates with a custom VSCode extension.
+A self-hosted AI coding agent that runs entirely on your machine. No cloud, no telemetry. Uses [Qwen2.5-Coder-7B](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF) via [llama.cpp](https://github.com/ggerganov/llama.cpp) for inference, a FastAPI server for orchestration, and a VSCode extension for the UI.
 
-## Phase 1 Status: Basic Infrastructure ✓
+Chat with it, get multi-file edits, review diffs, accept or reject — all offline.
 
-Phase 1 is complete with the following components:
-- Project structure and dependencies
-- LLM client interface for OpenAI-compatible API
-- Core data models (Task, Plan, Session, FileChange)
-- FastAPI server with basic endpoints
-- Configuration management system
-- Startup scripts for LLM and Agent servers
+## Prerequisites
 
-## Hardware I used in my server
+| What | Why |
+|------|-----|
+| Python 3.10+ | Agent server |
+| Node.js 18+ / npm | VSCode extension build |
+| NVIDIA GPU (8GB+ VRAM) | LLM inference via CUDA |
+| [llama.cpp](https://github.com/ggerganov/llama.cpp) | LLM server (`llama-server` must be in PATH) |
 
-- **GPU**: NVIDIA RTX 3080 (10GB VRAM) or equivalent
-- **RAM**: 32GB minimum
-- **CPU**: Intel i7 11th gen or equivalent (6+ cores)
-- **Storage**: 50GB free space (models + workspace + logs)
-
-## Quick Start
-
-### 1. Set up Python environment
+If you don't have llama.cpp yet:
 
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### 2. Download the LLM model
-
-```bash
-# Create models directory
-mkdir -p models
-cd models
-
-# Download Qwen2.5-Coder-7B-Instruct Q4_K_M (~4.37GB)
-wget https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf
-
-cd ..
-```
-
-### 3. Install llama.cpp
-
-```bash
-# Clone llama.cpp
 git clone https://github.com/ggerganov/llama.cpp
 cd llama.cpp
-
-# Build with CUDA support using cmake
 cmake -B build -DGGML_CUDA=ON
 cmake --build build --config Release --parallel 8
-
-# Add to PATH or copy binary
 sudo cp build/bin/llama-server /usr/local/bin/
-# Or add to PATH: export PATH="$PATH:$(pwd)/build/bin"
-
-cd ..
 ```
 
-### 4. Configure the system
+## Setup
+
+The install script handles everything: venv, pip deps, model downloads (~4.4GB LLM + embedding model), config file, and extension build.
 
 ```bash
-# Copy example config
-cp config.example.yaml config.yaml
-
-# Edit config.yaml if needed (optional for Phase 1)
+git clone <your-repo-url> byte-beaver
+cd byte-beaver
+chmod +x scripts/install.sh
+./scripts/install.sh
 ```
 
-### 5. Start the LLM server
+Skip steps with env vars if needed: `SKIP_MODEL=1`, `SKIP_EMBEDDING=1`, `SKIP_EXTENSION=1`.
+
+## Running
+
+You need two terminals:
 
 ```bash
-# Make script executable
-chmod +x scripts/run_llm.sh
-
-# Start LLM server (in a separate terminal)
+# Terminal 1 — LLM server (llama.cpp)
 ./scripts/run_llm.sh
-```
 
-### 6. Start the Agent server
-
-```bash
-# Make script executable
-chmod +x scripts/run_agent.sh
-
-# Start Agent server (in another terminal)
+# Terminal 2 — Agent server (FastAPI)
+source venv/bin/activate
 ./scripts/run_agent.sh
 ```
 
-## Phase 1 Verification
+Then install the extension in VSCode:
 
-See PHASE1_VERIFICATION.md for detailed verification steps.
+```bash
+code --install-extension vscode-extension/local-offline-coding-agent-0.0.1.vsix
+```
+
+Open the Agent Chat panel from the activity bar. That's it.
+
+## Configuration
+
+Copy and edit `config.yaml` (created automatically by `install.sh`):
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Key settings:
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `llm.base_url` | `http://localhost:8001/v1` | llama.cpp server address |
+| `llm.temperature` | `0.2` | Lower = more deterministic |
+| `llm.context_window` | `8192` | Token context size |
+| `agent.port` | `8000` | Agent server port |
+| `tools.web_search.enabled` | `false` | DuckDuckGo search (needs internet) |
+| `tools.terminal.timeout` | `60` | Command timeout in seconds |
+
+Environment variable overrides: `AGENT_LLM_BASE_URL`, `AGENT_HOST`, `AGENT_PORT`.
+
+## VSCode Extension
+
+Slash commands in the chat panel:
+
+| Command | What it does |
+|---------|--------------|
+| `/agent build` | Scaffold a project from a description |
+| `/agent implement` | Implement a feature |
+| `/agent refactor` | Refactor existing code |
+| `/agent explain` | Explain code or architecture |
+
+Extension settings (VSCode Settings > Extensions > Agent):
+
+| Setting | Default |
+|---------|---------|
+| `agent.serverUrl` | `http://localhost:8000` |
+| `agent.remoteWorkspacePath` | `""` |
+| `agent.autoApplyChanges` | `false` |
+
+## How It Works
+
+```
+VSCode Extension ──HTTP──► Agent Server (FastAPI :8000)
+                              │
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+                 Planner   Executor   Context Engine
+                    │         │         │
+                    ▼         ▼         ▼
+               LLM Client  Tools    Qdrant + Embeddings
+                    │      (fs/term/web)
+                    ▼
+              llama.cpp (:8001)
+              Qwen2.5-Coder-7B
+```
+
+1. You type a prompt in the chat panel
+2. The Planner breaks it into tasks via the LLM
+3. The Executor runs each task: retrieves relevant code context, calls the LLM, parses file-write/patch directives
+4. Proposed changes appear as diffs you can accept or reject
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check (LLM + VectorDB status) |
+| `GET` | `/health/detailed` | Per-component diagnostics |
+| `GET` | `/metrics` | Performance metrics |
+| `POST` | `/agent/prompt` | Submit prompt for planning + execution |
+| `POST` | `/agent/prompt/stream` | Streaming version |
+| `GET` | `/agent/status/{session_id}` | Session status and pending changes |
+| `POST` | `/agent/apply_changes` | Apply accepted changes |
+| `POST` | `/agent/cancel` | Cancel active session |
 
 ## Project Structure
 
 ```
-local-offline-coding-agent/
-├── agent/              # Agent core components
-│   ├── __init__.py
-│   └── models.py       # Data models
-├── llm/                # LLM client
-│   ├── __init__.py
-│   └── client.py       # OpenAI-compatible client
-├── server/             # FastAPI server
-│   ├── __init__.py
-│   └── api.py          # API endpoints
-├── tools/              # Tool system (Phase 2+)
-├── context/            # Context engine (Phase 3+)
-├── scripts/            # Startup scripts
-│   ├── run_llm.sh      # LLM server launcher
-│   └── run_agent.sh    # Agent server launcher
-├── tests/              # Test suite
-├── config.py           # Configuration management
-├── config.example.yaml # Example configuration
-├── requirements.txt    # Python dependencies
-└── README.md           # This file
+agent/          Core logic: planner, executor, prompt construction, data models
+llm/            OpenAI-compatible LLM client (sync + streaming)
+server/         FastAPI endpoints + input validation
+tools/          Sandboxed filesystem, terminal, web search
+context/        Workspace indexing, chunking, embeddings, vector search (Qdrant)
+utils/          Logging, metrics, token counting
+vscode-extension/  TypeScript VSCode extension (chat panel, diff preview, commands)
+scripts/        install.sh, run_llm.sh, run_agent.sh
+tests/          pytest + hypothesis test suite
 ```
-
-## API Endpoints (Phase 1)
-
-- `GET /health` - Health check
-- `POST /agent/prompt` - Submit user prompt
-- `GET /agent/status/{session_id}` - Get session status
-- `POST /agent/apply_changes` - Apply file changes
-- `POST /agent/cancel` - Cancel session
-
-## Next Steps
-
-- **Phase 2**: Filesystem tools and multi-file edits
-- **Phase 3**: Repository indexing and semantic search
-- **Phase 4**: Planner system and task execution loop
-- **Phase 5**: Web tool and terminal tool
-- **Phase 6**: VSCode extension integration
-
-## Configuration
-
-Key configuration options in `config.yaml`:
-
-```yaml
-llm:
-  base_url: "http://localhost:8001/v1"
-  model: "qwen2.5-coder-7b-instruct"
-  context_window: 8192
-
-agent:
-  host: "0.0.0.0"
-  port: 8000
-  log_level: "INFO"
-```
-
-Environment variable overrides:
-- `AGENT_LLM_BASE_URL` - Override LLM server URL
-- `AGENT_HOST` - Override agent server host
-- `AGENT_PORT` - Override agent server port
 
 ## Troubleshooting
 
-### LLM Server Issues
+**LLM server won't start**
+- Check the model exists: `ls models/qwen2.5-coder-7b-instruct-q4_k_m.gguf`
+- Check `llama-server` is in PATH: `which llama-server`
+- Out of VRAM? Lower GPU layers: `GPU_LAYERS=25 ./scripts/run_llm.sh`
 
-**Out of memory:**
+**Agent server can't reach LLM**
+- Is the LLM server running? `curl http://localhost:8001/v1/models`
+- Check `llm.base_url` in `config.yaml`
+
+**Extension not connecting**
+- Is the agent server running? `curl http://localhost:8000/health`
+- Check `agent.serverUrl` in VSCode settings
+
+**Slow generation**
+- Verify GPU usage in llama-server startup logs (look for "CUDA")
+- Check nothing else is using the GPU: `nvidia-smi`
+
+## Testing
+
 ```bash
-# Reduce GPU layers
-export GPU_LAYERS=25
-./scripts/run_llm.sh
-```
-
-**Model not found:**
-```bash
-# Check model path
-ls -lh models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
-```
-
-### Agent Server Issues
-
-**Port already in use:**
-```bash
-# Use different port
-export AGENT_PORT=8080
-./scripts/run_agent.sh
-```
-
-**Config not found:**
-```bash
-# Create from example
-cp config.example.yaml config.yaml
+pytest                          # Run all tests
+pytest --cov=. --cov-report=html  # With coverage report
+pytest tests/test_executor.py   # Single file
 ```
 
 ## License
 
-MIT License
+MIT

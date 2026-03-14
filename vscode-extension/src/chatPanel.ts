@@ -4,6 +4,7 @@ import {
     PlanInfo,
     StatusResponse,
     FileChangeInfo,
+    StreamEvent,
 } from './agentClient';
 
 export class ChatPanel implements vscode.WebviewViewProvider {
@@ -59,35 +60,72 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     }
 
     public async sendMessage(text: string): Promise<void> {
-        this.addMessage('user', text);
-        this.setTyping(true);
+            this.addMessage('user', text);
+            this.setTyping(true);
 
-        try {
-            const workspacePath = this.getWorkspacePath();
-            const response = await this.agentClient.sendPrompt(
-                text,
-                workspacePath,
-                this.sessionId
-            );
+            try {
+                const workspacePath = this.getWorkspacePath();
 
-            this.sessionId = response.session_id;
+                // Start a streaming agent message for real-time token display
+                this.postMessageToWebview({ type: 'startStreamingMessage' });
 
-            this.setTyping(false);
+                await this.agentClient.sendPromptStreaming(
+                    text,
+                    workspacePath,
+                    (evt: StreamEvent) => {
+                        switch (evt.event) {
+                            case 'session':
+                                this.sessionId = evt.data.session_id;
+                                break;
+                            case 'plan':
+                                this.setTyping(false);
+                                this.displayPlan(evt.data as PlanInfo);
+                                break;
+                            case 'token':
+                                this.postMessageToWebview({
+                                    type: 'streamToken',
+                                    token: evt.data,
+                                });
+                                break;
+                            case 'task_result':
+                                break;
+                            case 'task_error':
+                                this.addMessage(
+                                    'system',
+                                    `Task ${evt.data.task_id} failed: ${evt.data.error}`
+                                );
+                                break;
+                            case 'done':
+                                this.postMessageToWebview({ type: 'endStreamingMessage' });
+                                this.addMessage('agent', 'Task execution completed.');
+                                // Fetch final status to get pending changes
+                                if (this.sessionId) {
+                                    this.startStatusPolling(this.sessionId);
+                                }
+                                break;
+                            case 'error':
+                                this.postMessageToWebview({ type: 'endStreamingMessage' });
+                                this.addMessage(
+                                    'system',
+                                    `Error: ${evt.data.error ?? evt.data}`
+                                );
+                                break;
+                        }
+                    },
+                    this.sessionId
+                );
 
-            if (response.plan) {
-                this.displayPlan(response.plan);
+                this.setTyping(false);
+            } catch (error) {
+                this.setTyping(false);
+                this.postMessageToWebview({ type: 'endStreamingMessage' });
+                const errorMessage =
+                    error instanceof Error
+                        ? error.message
+                        : 'An unknown error occurred';
+                this.addMessage('system', `Error: ${errorMessage}`);
             }
-
-            this.startStatusPolling(response.session_id);
-        } catch (error) {
-            this.setTyping(false);
-            const errorMessage =
-                error instanceof Error
-                    ? error.message
-                    : 'An unknown error occurred';
-            this.addMessage('system', `Error: ${errorMessage}`);
         }
-    }
 
     public addMessage(
         role: 'user' | 'agent' | 'system',
@@ -304,6 +342,13 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             font-family: var(--vscode-editor-font-family, monospace);
             font-size: var(--vscode-editor-font-size, 0.9em);
         }
+        .message.streaming::after {
+            content: '\\25AE';
+            animation: blink 0.7s step-end infinite;
+        }
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -363,6 +408,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             if (e.key === 'Enter') sendMessage();
         });
 
+        var streamingDiv = null;
+        var streamingText = '';
+
         window.addEventListener('message', function(event) {
             const msg = event.data;
             switch (msg.type) {
@@ -395,6 +443,32 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                 }
                 case 'setTyping': {
                     typingEl.style.display = msg.typing ? 'block' : 'none';
+                    break;
+                }
+                case 'startStreamingMessage': {
+                    streamingDiv = document.createElement('div');
+                    streamingDiv.className = 'message agent streaming';
+                    streamingText = '';
+                    messagesEl.appendChild(streamingDiv);
+                    break;
+                }
+                case 'streamToken': {
+                    if (streamingDiv) {
+                        streamingText += msg.token;
+                        streamingDiv.innerHTML = renderContent(streamingText);
+                        streamingDiv.scrollIntoView({ behavior: 'smooth' });
+                    }
+                    break;
+                }
+                case 'endStreamingMessage': {
+                    if (streamingDiv) {
+                        streamingDiv.classList.remove('streaming');
+                        if (!streamingText.trim()) {
+                            streamingDiv.remove();
+                        }
+                    }
+                    streamingDiv = null;
+                    streamingText = '';
                     break;
                 }
             }

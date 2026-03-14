@@ -12,6 +12,7 @@ HOST="${HOST:-0.0.0.0}"
 THREADS="${THREADS:-6}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 UBATCH_SIZE="${UBATCH_SIZE:-256}"
+FLASH_ATTN="${FLASH_ATTN:-true}"
 
 # Check if model file exists
 if [ ! -f "$MODEL_PATH" ]; then
@@ -42,7 +43,14 @@ echo "Context size: $CONTEXT_SIZE"
 echo "GPU layers: $GPU_LAYERS"
 echo "Port: $PORT"
 echo "Threads: $THREADS"
+echo "Flash attention: $FLASH_ATTN"
 echo ""
+
+# Build flash attention flag
+FLASH_ATTN_FLAG=""
+if [ "$FLASH_ATTN" = "true" ]; then
+    FLASH_ATTN_FLAG="--flash-attn"
+fi
 
 # Run llama-server
 llama-server \
@@ -54,4 +62,5 @@ llama-server \
     --threads "$THREADS" \
     --batch-size "$BATCH_SIZE" \
     --ubatch-size "$UBATCH_SIZE" \
+    $FLASH_ATTN_FLAG \
     --log-disable

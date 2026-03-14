@@ -281,7 +281,7 @@ class TestStatusUpdates:
 
     def test_status_not_found(self, client):
         """Requesting status for unknown session returns 404."""
-        resp = client.get("/agent/status/nonexistent")
+        resp = client.get("/agent/status/00000000-0000-0000-0000-000000000000")
         assert resp.status_code == 404
 
     def test_status_includes_failed_tasks(self, client, temp_workspace):
