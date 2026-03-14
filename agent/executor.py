@@ -270,6 +270,8 @@ class Executor:
             full_response = ""
 
             for token in self.llm_client.stream_complete(messages, temperature=0.2):
+                if token is None:
+                    continue
                 full_response += token
                 yield {"event": "token", "data": token}
 

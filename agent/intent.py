@@ -28,6 +28,16 @@ _CHAT_ONLY_PATTERNS = [
     "thanks", "thank you", "thx", "bye", "goodbye",
     "good morning", "good evening", "good night",
     "who are you", "what are you", "what can you do",
+    "what's your name", "whats your name",
+]
+
+_CHAT_PREFIX_PATTERNS = [
+    "what is", "what's", "whats", "what does", "what do",
+    "how does", "how do", "how is", "how are",
+    "can you explain", "explain", "tell me about",
+    "describe", "why is", "why does", "why do",
+    "who is", "who are", "where is", "where are",
+    "do you", "are you", "can you",
 ]
 
 _CODE_SIGNAL_WORDS = [
@@ -82,6 +92,15 @@ class IntentClassifier:
             logger.info("Intent classified via keyword: chat (message=%r)", message[:80])
             return Intent.CHAT
 
+        # Fast path: questions and conversational prefixes
+        for prefix in _CHAT_PREFIX_PATTERNS:
+            if normalized.startswith(prefix):
+                # But not if it also has code-action words
+                words = set(normalized.split())
+                if not (words & set(_CODE_SIGNAL_WORDS)):
+                    logger.info("Intent classified via prefix: chat (message=%r)", message[:80])
+                    return Intent.CHAT
+
         # Fast path: message contains strong code-action verbs
         words = set(normalized.split())
         if words & set(_CODE_SIGNAL_WORDS) and len(normalized.split()) > 2:
@@ -107,8 +126,13 @@ class IntentClassifier:
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-            data = json.loads(cleaned)
-            intent_str = data.get("intent", "code_task")
+            # Try JSON parse first
+            try:
+                data = json.loads(cleaned)
+                intent_str = data.get("intent", "code_task")
+            except json.JSONDecodeError:
+                # Fallback: look for the word "chat" anywhere in the response
+                intent_str = "chat" if "chat" in cleaned.lower() else "code_task"
 
             if intent_str == "chat":
                 logger.info("Intent classified via LLM: chat (message=%r)", message[:80])
