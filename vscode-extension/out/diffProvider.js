@@ -129,28 +129,93 @@ class DiffProvider {
         this.rejectButton.show();
     }
     /**
-     * Accept all pending changes by calling the agent server.
+     * Extract the writable content from a FileChangeInfo's diff field.
+     * Returns the content as a Uint8Array suitable for vscode.workspace.fs.writeFile.
      */
-    async acceptChanges() {
-        if (!this.sessionId || this.pendingChanges.length === 0) {
+    extractContent(change) {
+        return new TextEncoder().encode(change.diff);
+    }
+    /**
+     * Ensure all parent directories exist for a given file URI.
+     */
+    async ensureParentDirectories(fileUri) {
+        const filePath = fileUri.path;
+        const lastSlash = filePath.lastIndexOf('/');
+        if (lastSlash <= 0) {
             return;
         }
-        const changeIds = this.pendingChanges.map((c) => c.change_id);
+        const parentPath = filePath.substring(0, lastSlash);
+        const parentUri = vscode.Uri.parse(`${fileUri.scheme}://${parentPath}`);
+        await vscode.workspace.fs.createDirectory(parentUri);
+    }
+    /**
+     * Write a single file change to the local workspace filesystem.
+     * Handles create, modify, and delete change types.
+     */
+    async applyChangeLocally(workspaceRoot, change) {
+        const fileUri = vscode.Uri.joinPath(workspaceRoot, change.file_path);
         try {
-            const result = await this.agentClient.applyChanges(this.sessionId, changeIds);
-            if (result.applied.length > 0) {
-                void vscode.window.showInformationMessage(`Applied ${result.applied.length} change(s) successfully.`);
+            if (change.change_type === 'delete') {
+                await vscode.workspace.fs.delete(fileUri);
             }
-            if (result.failed.length > 0) {
-                const failedFiles = result.failed.join(', ');
-                void vscode.window.showWarningMessage(`Failed to apply changes: ${failedFiles}`);
+            else {
+                await this.ensureParentDirectories(fileUri);
+                await vscode.workspace.fs.writeFile(fileUri, this.extractContent(change));
             }
+            return {
+                changeId: change.change_id,
+                filePath: change.file_path,
+                success: true,
+            };
         }
         catch (error) {
-            const message = error instanceof Error
-                ? error.message
-                : 'Unknown error';
-            void vscode.window.showErrorMessage(`Failed to apply changes: ${message}`);
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+                changeId: change.change_id,
+                filePath: change.file_path,
+                success: false,
+                error: message,
+            };
+        }
+    }
+    /**
+     * Accept all pending changes by calling the agent server.
+     */
+    /**
+         * Accept all pending changes by writing them to the local filesystem.
+         * Notifies the server afterward for session state tracking.
+         */
+    async acceptChanges() {
+        if (this.pendingChanges.length === 0) {
+            return;
+        }
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('No workspace folder open. Cannot write files.');
+            return;
+        }
+        try {
+            const results = [];
+            for (const change of this.pendingChanges) {
+                const result = await this.applyChangeLocally(workspaceRoot, change);
+                results.push(result);
+            }
+            const successes = results.filter((r) => r.success);
+            const failures = results.filter((r) => !r.success);
+            if (failures.length === 0) {
+                vscode.window.showInformationMessage(`Successfully applied ${successes.length} change(s).`);
+            }
+            else if (successes.length > 0) {
+                const failedPaths = failures.map((f) => f.filePath);
+                vscode.window.showWarningMessage(`Applied ${successes.length} change(s), ${failures.length} failed: ${failedPaths.join(', ')}`);
+            }
+            else {
+                vscode.window.showErrorMessage(`All ${failures.length} change(s) failed to apply.`);
+            }
+            if (successes.length > 0 && this.sessionId) {
+                const successIds = successes.map((r) => r.changeId);
+                this.agentClient.notifyChangesApplied(this.sessionId, successIds);
+            }
         }
         finally {
             this.pendingChanges = [];

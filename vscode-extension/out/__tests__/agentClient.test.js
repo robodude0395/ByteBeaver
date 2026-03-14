@@ -115,6 +115,32 @@ describe('AgentClient', () => {
             expect(result).toBe(false);
         });
     });
+    describe('notifyChangesApplied', () => {
+        it('posts to /agent/notify_applied with correct payload', async () => {
+            mockAxiosInstance.post.mockResolvedValue({ data: {} });
+            await client.notifyChangesApplied('sess-1', ['c1', 'c2']);
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/agent/notify_applied', {
+                session_id: 'sess-1',
+                change_ids: ['c1', 'c2'],
+            });
+        });
+        it('does not throw when the server returns a network error', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+            mockAxiosInstance.post.mockRejectedValue(new Error('Network Error'));
+            await expect(client.notifyChangesApplied('sess-1', ['c1'])).resolves.toBeUndefined();
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to notify server of applied changes'));
+            consoleSpy.mockRestore();
+        });
+        it('does not throw when the server returns 500', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+            const axiosError = new axios_1.default.AxiosError('Internal Server Error');
+            axiosError.response = { status: 500, data: { detail: 'Server crashed' } };
+            mockAxiosInstance.post.mockRejectedValue(axiosError);
+            await expect(client.notifyChangesApplied('sess-1', ['c1'])).resolves.toBeUndefined();
+            expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to notify server of applied changes'));
+            consoleSpy.mockRestore();
+        });
+    });
     describe('error handling', () => {
         it('gives clear error on connection refused', async () => {
             const axiosError = new axios_1.default.AxiosError('connect ECONNREFUSED');

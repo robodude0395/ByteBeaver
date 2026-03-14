@@ -26,6 +26,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const diffProvider = new DiffProvider(agentClient, context.extensionUri);
     context.subscriptions.push(diffProvider);
 
+    // Wire up pending changes from chat to diff provider
+    chatPanel.onPendingChanges((sessionId, changes) => {
+        diffProvider.setPendingChanges(sessionId, changes);
+        void diffProvider.showChanges();
+    });
+
     // Create status bar
     const statusBar = new AgentStatusBar();
     context.subscriptions.push(statusBar);
@@ -37,7 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
         })
     );
 
-    // Register accept/reject changes commands
+    // Register undo changes command (for programmatic use)
     context.subscriptions.push(
         vscode.commands.registerCommand('local-agent.acceptChanges', () => {
             void diffProvider.acceptChanges();

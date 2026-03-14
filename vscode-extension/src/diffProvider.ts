@@ -1,6 +1,19 @@
 import * as vscode from 'vscode';
 import { AgentClient, FileChangeInfo } from './agentClient';
 
+interface WriteResult {
+    changeId: string;
+    filePath: string;
+    success: boolean;
+    error?: string;
+}
+
+interface AppliedChange {
+    change: FileChangeInfo;
+    originalContent: Uint8Array | null; // null means file didn't exist before
+    fileUri: vscode.Uri;
+}
+
 /**
  * Content provider for showing proposed file content in diff views.
  * Stores content keyed by URI and serves it to the diff editor.
@@ -34,13 +47,19 @@ export class ProposedContentProvider
 }
 
 /**
- * Manages diff previews and accept/reject workflow for proposed code changes.
+ * Manages the write-first workflow for proposed code changes.
+ *
+ * Flow (Copilot-style):
+ * 1. Changes arrive from the agent server
+ * 2. Files are written to disk immediately
+ * 3. User sees a notification with Keep / Undo
+ * 4. Keep: notify server, done
+ * 5. Undo: revert all files to their original state
  */
 export class DiffProvider {
     private pendingChanges: FileChangeInfo[] = [];
+    private appliedChanges: AppliedChange[] = [];
     private sessionId: string | undefined;
-    private acceptButton: vscode.StatusBarItem | undefined;
-    private rejectButton: vscode.StatusBarItem | undefined;
     private readonly agentClient: AgentClient;
     private readonly contentProvider: ProposedContentProvider;
     private contentProviderRegistration: vscode.Disposable | undefined;
@@ -58,7 +77,8 @@ export class DiffProvider {
     }
 
     /**
-     * Store pending changes and show status bar actions.
+     * Store pending changes, write them to disk immediately,
+     * then prompt the user to keep or undo.
      */
     public setPendingChanges(
         sessionId: string,
@@ -66,146 +86,211 @@ export class DiffProvider {
     ): void {
         this.sessionId = sessionId;
         this.pendingChanges = [...changes];
-        this.showChangeActions();
     }
 
     /**
-     * Display diffs for all pending changes. Opens the first change immediately.
+     * Write all pending changes to disk immediately, then show keep/undo prompt.
      */
     public async showChanges(): Promise<void> {
         if (this.pendingChanges.length === 0) {
             return;
         }
 
-        await this.showDiff(this.pendingChanges[0]);
-    }
-
-    /**
-     * Show diff for a single file change.
-     */
-    public async showDiff(change: FileChangeInfo): Promise<void> {
-        const proposedUri = vscode.Uri.parse(
-            `${DiffProvider.scheme}:${change.file_path}?change=${change.change_id}`
-        );
-
-        // Set the proposed content from the diff field
-        this.contentProvider.setContent(proposedUri, change.diff);
-
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = workspaceFolders?.[0]?.uri;
-
-        let originalUri: vscode.Uri;
-        if (workspaceRoot) {
-            originalUri = vscode.Uri.joinPath(workspaceRoot, change.file_path);
-        } else {
-            originalUri = vscode.Uri.file(change.file_path);
-        }
-
-        const title = `${change.file_path} (Proposed Changes)`;
-
-        await vscode.commands.executeCommand(
-            'vscode.diff',
-            originalUri,
-            proposedUri,
-            title
-        );
-    }
-
-    /**
-     * Show accept/reject buttons in the status bar.
-     */
-    public showChangeActions(): void {
-        if (!this.acceptButton) {
-            this.acceptButton = vscode.window.createStatusBarItem(
-                vscode.StatusBarAlignment.Right,
-                101
-            );
-        }
-        this.acceptButton.text = '$(check) Accept Changes';
-        this.acceptButton.command = 'local-agent.acceptChanges';
-        this.acceptButton.tooltip = 'Accept all proposed changes';
-        this.acceptButton.show();
-
-        if (!this.rejectButton) {
-            this.rejectButton = vscode.window.createStatusBarItem(
-                vscode.StatusBarAlignment.Right,
-                100
-            );
-        }
-        this.rejectButton.text = '$(x) Reject Changes';
-        this.rejectButton.command = 'local-agent.rejectChanges';
-        this.rejectButton.tooltip = 'Reject all proposed changes';
-        this.rejectButton.show();
-    }
-
-    /**
-     * Accept all pending changes by calling the agent server.
-     */
-    public async acceptChanges(): Promise<void> {
-        if (!this.sessionId || this.pendingChanges.length === 0) {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('No workspace folder open. Cannot write files.');
             return;
         }
 
-        const changeIds = this.pendingChanges.map((c) => c.change_id);
+        // Write all changes to disk, saving originals for undo
+        const results: WriteResult[] = [];
+        this.appliedChanges = [];
 
-        try {
-            const result = await this.agentClient.applyChanges(
-                this.sessionId,
-                changeIds
+        for (const change of this.pendingChanges) {
+            const fileUri = vscode.Uri.joinPath(workspaceRoot, change.file_path);
+
+            // Save original content for undo
+            let originalContent: Uint8Array | null = null;
+            if (change.change_type !== 'create') {
+                try {
+                    originalContent = await vscode.workspace.fs.readFile(fileUri);
+                } catch {
+                    // File doesn't exist — that's fine for create
+                    originalContent = null;
+                }
+            }
+
+            const result = await this.applyChangeLocally(workspaceRoot, change);
+            results.push(result);
+
+            if (result.success) {
+                this.appliedChanges.push({ change, originalContent, fileUri });
+            }
+        }
+
+        const successes = results.filter((r) => r.success);
+        const failures = results.filter((r) => !r.success);
+
+        if (successes.length === 0) {
+            vscode.window.showErrorMessage(
+                `All ${failures.length} change(s) failed to apply.`
             );
+            this.clearState();
+            return;
+        }
 
-            if (result.applied.length > 0) {
-                void vscode.window.showInformationMessage(
-                    `Applied ${result.applied.length} change(s) successfully.`
+        // Open the first changed file so the user can see what happened
+        if (this.appliedChanges.length > 0) {
+            const firstUri = this.appliedChanges[0].fileUri;
+            try {
+                await vscode.window.showTextDocument(firstUri, { preview: true });
+            } catch {
+                // Non-critical — file might not be openable
+            }
+        }
+
+        // Build the prompt message
+        let message: string;
+        if (failures.length === 0) {
+            message = `Agent applied ${successes.length} file change(s).`;
+        } else {
+            const failedPaths = failures.map((f) => f.filePath).join(', ');
+            message = `Agent applied ${successes.length} change(s), ${failures.length} failed: ${failedPaths}`;
+        }
+
+        // Show keep/undo notification
+        const choice = await vscode.window.showInformationMessage(
+            message,
+            'Keep',
+            'Undo'
+        );
+
+        if (choice === 'Undo') {
+            await this.undoChanges();
+        } else {
+            // Keep (or dismissed) — notify server
+            await this.acceptChanges();
+        }
+    }
+
+    /**
+     * Extract the writable content from a FileChangeInfo.
+     * Uses new_content (actual file content) when available, falls back to diff.
+     */
+    private extractContent(change: FileChangeInfo): Uint8Array {
+        const content = change.new_content ?? change.diff;
+        return new TextEncoder().encode(content);
+    }
+
+    /**
+     * Ensure all parent directories exist for a given file URI.
+     */
+    private async ensureParentDirectories(fileUri: vscode.Uri): Promise<void> {
+        const filePath = fileUri.path;
+        const lastSlash = filePath.lastIndexOf('/');
+        if (lastSlash <= 0) {
+            return;
+        }
+        const parentPath = filePath.substring(0, lastSlash);
+        const parentUri = vscode.Uri.parse(`${fileUri.scheme}://${parentPath}`);
+        await vscode.workspace.fs.createDirectory(parentUri);
+    }
+
+    /**
+     * Write a single file change to the local workspace filesystem.
+     */
+    private async applyChangeLocally(
+        workspaceRoot: vscode.Uri,
+        change: FileChangeInfo
+    ): Promise<WriteResult> {
+        const fileUri = vscode.Uri.joinPath(workspaceRoot, change.file_path);
+        try {
+            if (change.change_type === 'delete') {
+                await vscode.workspace.fs.delete(fileUri);
+            } else {
+                await this.ensureParentDirectories(fileUri);
+                await vscode.workspace.fs.writeFile(
+                    fileUri,
+                    this.extractContent(change)
                 );
             }
-
-            if (result.failed.length > 0) {
-                const failedFiles = result.failed.join(', ');
-                void vscode.window.showWarningMessage(
-                    `Failed to apply changes: ${failedFiles}`
-                );
-            }
+            return {
+                changeId: change.change_id,
+                filePath: change.file_path,
+                success: true,
+            };
         } catch (error) {
             const message =
-                error instanceof Error
-                    ? error.message
-                    : 'Unknown error';
-            void vscode.window.showErrorMessage(
-                `Failed to apply changes: ${message}`
-            );
-        } finally {
-            this.pendingChanges = [];
-            this.sessionId = undefined;
-            this.contentProvider.clear();
-            this.hideChangeActions();
+                error instanceof Error ? error.message : String(error);
+            return {
+                changeId: change.change_id,
+                filePath: change.file_path,
+                success: false,
+                error: message,
+            };
         }
     }
 
     /**
-     * Reject all pending changes and clear state.
+     * Notify server that changes were kept. Called when user clicks Keep or dismisses.
+     */
+    public async acceptChanges(): Promise<void> {
+        if (this.appliedChanges.length > 0 && this.sessionId) {
+            const changeIds = this.appliedChanges.map((a) => a.change.change_id);
+            this.agentClient.notifyChangesApplied(this.sessionId, changeIds);
+        }
+        this.clearState();
+    }
+
+    /**
+     * Revert all applied changes to their original state.
+     */
+    public async undoChanges(): Promise<void> {
+        for (const applied of this.appliedChanges) {
+            try {
+                if (applied.change.change_type === 'create') {
+                    // File was created — delete it
+                    await vscode.workspace.fs.delete(applied.fileUri);
+                } else if (applied.change.change_type === 'delete') {
+                    // File was deleted — restore original content
+                    if (applied.originalContent) {
+                        await this.ensureParentDirectories(applied.fileUri);
+                        await vscode.workspace.fs.writeFile(
+                            applied.fileUri,
+                            applied.originalContent
+                        );
+                    }
+                } else {
+                    // File was modified — restore original content
+                    if (applied.originalContent) {
+                        await vscode.workspace.fs.writeFile(
+                            applied.fileUri,
+                            applied.originalContent
+                        );
+                    }
+                }
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                console.error(`Failed to undo ${applied.change.file_path}: ${msg}`);
+            }
+        }
+
+        vscode.window.showInformationMessage('Changes undone.');
+        this.clearState();
+    }
+
+    /**
+     * Reject all pending changes (alias for undo for backward compat).
      */
     public async rejectChanges(): Promise<void> {
-        this.pendingChanges = [];
-        this.sessionId = undefined;
-        this.contentProvider.clear();
-        this.hideChangeActions();
-
-        void vscode.window.showInformationMessage(
-            'All proposed changes have been rejected.'
-        );
+        await this.undoChanges();
     }
 
-    /**
-     * Hide the accept/reject status bar buttons.
-     */
-    public hideChangeActions(): void {
-        if (this.acceptButton) {
-            this.acceptButton.hide();
-        }
-        if (this.rejectButton) {
-            this.rejectButton.hide();
-        }
+    private clearState(): void {
+        this.pendingChanges = [];
+        this.appliedChanges = [];
+        this.sessionId = undefined;
+        this.contentProvider.clear();
     }
 
     /**
@@ -219,12 +304,10 @@ export class DiffProvider {
      * Clean up all resources.
      */
     public dispose(): void {
-        this.hideChangeActions();
-        this.acceptButton?.dispose();
-        this.rejectButton?.dispose();
         this.contentProvider.dispose();
         this.contentProviderRegistration?.dispose();
         this.pendingChanges = [];
+        this.appliedChanges = [];
         this.sessionId = undefined;
     }
 }

@@ -74,6 +74,11 @@
           "default": "http://localhost:8000",
           "description": "URL of the agent server"
         },
+        "agent.remoteWorkspacePath": {
+          "type": "string",
+          "default": "",
+          "description": "Workspace path on the remote server. When set, this path is sent to the server instead of the local workspace path. Use this when the agent server runs on a different machine."
+        },
         "agent.autoApplyChanges": {
           "type": "boolean",
           "default": false,
@@ -83,9 +88,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run package-ext",
+    "compile": "npm run check-types && node esbuild.js",
+    "check-types": "tsc --noEmit",
+    "watch": "node esbuild.js --watch",
+    "package-ext": "npm run check-types && node esbuild.js --production",
     "package": "vsce package",
     "lint": "eslint src --ext ts",
     "test": "jest --passWithNoTests"
@@ -95,6 +102,7 @@
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.24.0",
     "fast-check": "^4.6.0",
     "jest": "^30.3.0",
     "ts-jest": "^29.4.6",

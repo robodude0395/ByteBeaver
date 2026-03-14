@@ -17,6 +17,11 @@ export interface CancelRequest {
     session_id: string;
 }
 
+export interface NotifyAppliedRequest {
+    session_id: string;
+    change_ids: string[];
+}
+
 // Response interfaces
 
 export interface TaskInfo {
@@ -41,6 +46,7 @@ export interface FileChangeInfo {
     file_path: string;
     change_type: string;
     diff: string;
+    new_content?: string;
 }
 
 export interface StatusResponse {
@@ -144,6 +150,26 @@ export class AgentClient {
             return response.data;
         } catch (error) {
             throw this.handleError(error, 'Failed to cancel session');
+        }
+    }
+
+    /**
+     * Notify the server that changes were applied locally.
+     * This is best-effort — failures are logged, not thrown.
+     */
+    async notifyChangesApplied(
+        sessionId: string,
+        changeIds: string[]
+    ): Promise<void> {
+        try {
+            const payload: NotifyAppliedRequest = {
+                session_id: sessionId,
+                change_ids: changeIds,
+            };
+            await this.client.post('/agent/notify_applied', payload);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Failed to notify server of applied changes: ${message}`);
         }
     }
 

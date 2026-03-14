@@ -103,6 +103,11 @@ const workspace = {
             index: 0,
         },
     ],
+    fs: {
+        writeFile: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn().mockResolvedValue(undefined),
+        createDirectory: jest.fn().mockResolvedValue(undefined),
+    },
 };
 const StatusBarAlignment = {
     Left: 1,

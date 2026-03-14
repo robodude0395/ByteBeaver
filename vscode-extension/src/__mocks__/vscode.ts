@@ -54,6 +54,7 @@ const window = {
     showWarningMessage: jest.fn(),
     showErrorMessage: jest.fn(),
     showInputBox: jest.fn(),
+    showTextDocument: jest.fn().mockResolvedValue(undefined),
 };
 
 const commands = {
@@ -117,6 +118,12 @@ const workspace = {
             index: 0,
         },
     ],
+    fs: {
+        writeFile: jest.fn().mockResolvedValue(undefined),
+        readFile: jest.fn().mockResolvedValue(new Uint8Array()),
+        delete: jest.fn().mockResolvedValue(undefined),
+        createDirectory: jest.fn().mockResolvedValue(undefined),
+    },
 };
 
 const StatusBarAlignment = {

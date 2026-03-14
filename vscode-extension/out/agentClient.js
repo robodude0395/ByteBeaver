@@ -96,6 +96,23 @@ class AgentClient {
             throw this.handleError(error, 'Failed to cancel session');
         }
     }
+    /**
+     * Notify the server that changes were applied locally.
+     * This is best-effort — failures are logged, not thrown.
+     */
+    async notifyChangesApplied(sessionId, changeIds) {
+        try {
+            const payload = {
+                session_id: sessionId,
+                change_ids: changeIds,
+            };
+            await this.client.post('/agent/notify_applied', payload);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Failed to notify server of applied changes: ${message}`);
+        }
+    }
     async healthCheck() {
         try {
             const response = await this.client.get('/health');

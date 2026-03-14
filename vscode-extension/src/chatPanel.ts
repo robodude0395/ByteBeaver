@@ -14,10 +14,15 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private pollingInterval?: ReturnType<typeof setInterval>;
     private readonly extensionUri: vscode.Uri;
     private readonly agentClient: AgentClient;
+    private onPendingChangesCallback?: (sessionId: string, changes: FileChangeInfo[]) => void;
 
     constructor(extensionUri: vscode.Uri, agentClient: AgentClient) {
         this.extensionUri = extensionUri;
         this.agentClient = agentClient;
+    }
+
+    public onPendingChanges(callback: (sessionId: string, changes: FileChangeInfo[]) => void): void {
+        this.onPendingChangesCallback = callback;
     }
 
     public resolveWebviewView(
@@ -129,7 +134,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                     if (status.status === 'completed') {
                         this.addMessage('agent', 'Task execution completed.');
                         if (status.pending_changes.length > 0) {
-                            this.notifyPendingChanges(status.pending_changes);
+                            this.notifyPendingChanges(sessionId, status.pending_changes);
                         }
                     } else if (status.status === 'error') {
                         this.addMessage(
@@ -164,7 +169,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         });
     }
 
-    private notifyPendingChanges(changes: FileChangeInfo[]): void {
+    private notifyPendingChanges(sessionId: string, changes: FileChangeInfo[]): void {
         const fileList = changes
             .map((c) => `${c.change_type}: ${c.file_path}`)
             .join('\n');
@@ -172,9 +177,18 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             'agent',
             `${changes.length} file change(s) pending review:\n${fileList}`
         );
+
+        if (this.onPendingChangesCallback) {
+            this.onPendingChangesCallback(sessionId, changes);
+        }
     }
 
     private getWorkspacePath(): string {
+        const config = vscode.workspace.getConfiguration('agent');
+        const remoteWorkspacePath = config.get<string>('remoteWorkspacePath', '');
+        if (remoteWorkspacePath) {
+            return remoteWorkspacePath;
+        }
         const folders = vscode.workspace.workspaceFolders;
         if (folders && folders.length > 0) {
             return folders[0].uri.fsPath;

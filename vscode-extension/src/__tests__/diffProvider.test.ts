@@ -10,6 +10,7 @@ const mockVscode = vscode as any;
 function createMockAgentClient(): jest.Mocked<AgentClient> {
     return {
         applyChanges: jest.fn(),
+        notifyChangesApplied: jest.fn(),
         sendPrompt: jest.fn(),
         getStatus: jest.fn(),
         cancelSession: jest.fn(),
@@ -23,6 +24,7 @@ function makeFakeChange(overrides: Partial<FileChangeInfo> = {}): FileChangeInfo
         file_path: 'src/index.ts',
         change_type: 'modify',
         diff: 'const x = 1;',
+        new_content: 'const x = 1;',
         ...overrides,
     };
 }
@@ -42,15 +44,13 @@ describe('ProposedContentProvider', () => {
     it('setContent stores content and provideTextDocumentContent retrieves it', () => {
         const uri = vscode.Uri.parse('agent-proposed:src/file.ts?change=c1');
         provider.setContent(uri, 'const hello = "world";');
-
         const result = provider.provideTextDocumentContent(uri);
         expect(result).toBe('const hello = "world";');
     });
 
     it('provideTextDocumentContent returns empty string for unknown URI', () => {
         const uri = vscode.Uri.parse('agent-proposed:unknown/file.ts');
-        const result = provider.provideTextDocumentContent(uri);
-        expect(result).toBe('');
+        expect(provider.provideTextDocumentContent(uri)).toBe('');
     });
 
     it('clear() removes all stored content', () => {
@@ -58,9 +58,7 @@ describe('ProposedContentProvider', () => {
         const uri2 = vscode.Uri.parse('agent-proposed:file2.ts');
         provider.setContent(uri1, 'content1');
         provider.setContent(uri2, 'content2');
-
         provider.clear();
-
         expect(provider.provideTextDocumentContent(uri1)).toBe('');
         expect(provider.provideTextDocumentContent(uri2)).toBe('');
     });
@@ -73,7 +71,14 @@ describe('DiffProvider', () => {
     let extensionUri: vscode.Uri;
 
     beforeEach(() => {
+        jest.restoreAllMocks();
         jest.clearAllMocks();
+        mockVscode.workspace.fs.writeFile.mockReset().mockResolvedValue(undefined);
+        mockVscode.workspace.fs.readFile.mockReset().mockResolvedValue(new Uint8Array());
+        mockVscode.workspace.fs.delete.mockReset().mockResolvedValue(undefined);
+        mockVscode.workspace.fs.createDirectory.mockReset().mockResolvedValue(undefined);
+        mockVscode.window.showInformationMessage.mockReset().mockResolvedValue('Keep');
+        mockVscode.window.showTextDocument.mockReset().mockResolvedValue(undefined);
         mockClient = createMockAgentClient();
         extensionUri = vscode.Uri.file('/ext');
         diffProvider = new DiffProvider(mockClient, extensionUri);
@@ -83,155 +88,127 @@ describe('DiffProvider', () => {
         diffProvider.dispose();
     });
 
-    describe('setPendingChanges', () => {
-        it('stores changes and shows status bar buttons', () => {
-            const changes = [makeFakeChange()];
-            diffProvider.setPendingChanges('sess-1', changes);
-
-            expect(diffProvider.getPendingChanges()).toEqual(changes);
-            // Status bar items should have been created and shown
-            expect(mockVscode.window.createStatusBarItem).toHaveBeenCalledTimes(2);
-        });
-    });
-
-    describe('showChanges', () => {
-        it('opens diff editor for first pending change', async () => {
+    describe('showChanges (write-first flow)', () => {
+        it('writes files to disk immediately on showChanges', async () => {
             const changes = [
-                makeFakeChange({ change_id: 'c1', file_path: 'src/a.ts' }),
-                makeFakeChange({ change_id: 'c2', file_path: 'src/b.ts' }),
+                makeFakeChange({ change_id: 'c1', file_path: 'src/a.ts', new_content: 'content a' }),
+                makeFakeChange({ change_id: 'c2', file_path: 'src/b.ts', change_type: 'create', new_content: 'content b' }),
             ];
             diffProvider.setPendingChanges('sess-1', changes);
-
             await diffProvider.showChanges();
 
-            expect(mockVscode.commands.executeCommand).toHaveBeenCalledWith(
-                'vscode.diff',
-                expect.anything(),
-                expect.anything(),
-                'src/a.ts (Proposed Changes)'
+            expect(mockVscode.workspace.fs.writeFile).toHaveBeenCalledTimes(2);
+            expect(mockClient.applyChanges).not.toHaveBeenCalled();
+        });
+
+        it('shows keep/undo notification after writing', async () => {
+            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
+            await diffProvider.showChanges();
+
+            expect(mockVscode.window.showInformationMessage).toHaveBeenCalledWith(
+                expect.stringContaining('applied 1 file change'),
+                'Keep',
+                'Undo'
             );
+        });
+
+        it('notifies server when user clicks Keep', async () => {
+            mockVscode.window.showInformationMessage.mockResolvedValue('Keep');
+            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
+            await diffProvider.showChanges();
+
+            expect(mockClient.notifyChangesApplied).toHaveBeenCalledWith('sess-1', ['c1']);
+        });
+
+        it('reverts files when user clicks Undo on a create', async () => {
+            mockVscode.window.showInformationMessage.mockResolvedValue('Undo');
+            const change = makeFakeChange({ change_type: 'create', file_path: 'src/new.ts' });
+            diffProvider.setPendingChanges('sess-1', [change]);
+            await diffProvider.showChanges();
+
+            // writeFile for the initial apply, then delete for the undo
+            expect(mockVscode.workspace.fs.writeFile).toHaveBeenCalledTimes(1);
+            expect(mockVscode.workspace.fs.delete).toHaveBeenCalledTimes(1);
+        });
+
+        it('restores original content when user clicks Undo on a modify', async () => {
+            const originalBytes = new TextEncoder().encode('original content');
+            mockVscode.workspace.fs.readFile.mockResolvedValue(originalBytes);
+            mockVscode.window.showInformationMessage.mockResolvedValue('Undo');
+
+            const change = makeFakeChange({ change_type: 'modify', new_content: 'new content' });
+            diffProvider.setPendingChanges('sess-1', [change]);
+            await diffProvider.showChanges();
+
+            // writeFile called twice: once for apply, once for restore
+            expect(mockVscode.workspace.fs.writeFile).toHaveBeenCalledTimes(2);
         });
 
         it('does nothing when no pending changes', async () => {
             await diffProvider.showChanges();
-            expect(mockVscode.commands.executeCommand).not.toHaveBeenCalled();
-        });
-    });
-
-    describe('showDiff', () => {
-        it('calls vscode.diff command with correct URIs', async () => {
-            const change = makeFakeChange({
-                change_id: 'c1',
-                file_path: 'src/main.ts',
-                diff: 'new content',
-            });
-
-            await diffProvider.showDiff(change);
-
-            expect(mockVscode.commands.executeCommand).toHaveBeenCalledWith(
-                'vscode.diff',
-                expect.anything(), // originalUri
-                expect.anything(), // proposedUri
-                'src/main.ts (Proposed Changes)'
-            );
-
-            // Verify the proposed URI uses the correct scheme
-            const proposedUri = mockVscode.commands.executeCommand.mock.calls[0][2];
-            expect(proposedUri.toString()).toContain('agent-proposed');
-        });
-    });
-
-    describe('acceptChanges', () => {
-        it('calls agentClient.applyChanges with correct IDs', async () => {
-            mockClient.applyChanges.mockResolvedValue({
-                applied: ['c1', 'c2'],
-                failed: [],
-                errors: {},
-            });
-
-            const changes = [
-                makeFakeChange({ change_id: 'c1' }),
-                makeFakeChange({ change_id: 'c2' }),
-            ];
-            diffProvider.setPendingChanges('sess-1', changes);
-
-            await diffProvider.acceptChanges();
-
-            expect(mockClient.applyChanges).toHaveBeenCalledWith('sess-1', ['c1', 'c2']);
+            expect(mockVscode.workspace.fs.writeFile).not.toHaveBeenCalled();
+            expect(mockVscode.window.showInformationMessage).not.toHaveBeenCalled();
         });
 
-        it('shows success message and clears state', async () => {
-            mockClient.applyChanges.mockResolvedValue({
-                applied: ['c1'],
-                failed: [],
-                errors: {},
-            });
+        it('shows error and aborts when no workspace folder is open', async () => {
+            const originalFolders = mockVscode.workspace.workspaceFolders;
+            mockVscode.workspace.workspaceFolders = undefined;
 
             diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
-            await diffProvider.acceptChanges();
-
-            expect(mockVscode.window.showInformationMessage).toHaveBeenCalledWith(
-                'Applied 1 change(s) successfully.'
-            );
-            expect(diffProvider.getPendingChanges()).toEqual([]);
-        });
-
-        it('shows warning for failed changes', async () => {
-            mockClient.applyChanges.mockResolvedValue({
-                applied: [],
-                failed: ['c1'],
-                errors: { c1: 'write error' },
-            });
-
-            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
-            await diffProvider.acceptChanges();
-
-            expect(mockVscode.window.showWarningMessage).toHaveBeenCalledWith(
-                'Failed to apply changes: c1'
-            );
-        });
-
-        it('shows error on network failure', async () => {
-            mockClient.applyChanges.mockRejectedValue(new Error('Network error'));
-
-            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
-            await diffProvider.acceptChanges();
+            await diffProvider.showChanges();
 
             expect(mockVscode.window.showErrorMessage).toHaveBeenCalledWith(
-                'Failed to apply changes: Network error'
+                'No workspace folder open. Cannot write files.'
+            );
+            expect(mockVscode.workspace.fs.writeFile).not.toHaveBeenCalled();
+
+            mockVscode.workspace.workspaceFolders = originalFolders;
+        });
+
+        it('shows error when all writes fail', async () => {
+            mockVscode.workspace.fs.writeFile.mockRejectedValue(new Error('Disk full'));
+            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
+            await diffProvider.showChanges();
+
+            expect(mockVscode.window.showErrorMessage).toHaveBeenCalledWith(
+                expect.stringContaining('failed to apply')
             );
         });
 
-        it('does nothing when no session or pending changes', async () => {
-            await diffProvider.acceptChanges();
-            expect(mockClient.applyChanges).not.toHaveBeenCalled();
-        });
-    });
-
-    describe('rejectChanges', () => {
-        it('clears pending changes and shows message', async () => {
+        it('opens the first changed file after writing', async () => {
             diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
+            await diffProvider.showChanges();
 
-            await diffProvider.rejectChanges();
+            expect(mockVscode.window.showTextDocument).toHaveBeenCalledTimes(1);
+        });
 
+        it('delete change type calls vscode.workspace.fs.delete', async () => {
+            // readFile returns original content for the delete case
+            mockVscode.workspace.fs.readFile.mockResolvedValue(new TextEncoder().encode('old'));
+            const deleteChange = makeFakeChange({
+                change_id: 'del-1',
+                file_path: 'src/obsolete.ts',
+                change_type: 'delete',
+            });
+            diffProvider.setPendingChanges('sess-1', [deleteChange]);
+            await diffProvider.showChanges();
+
+            expect(mockVscode.workspace.fs.delete).toHaveBeenCalledTimes(1);
+            expect(mockVscode.workspace.fs.writeFile).not.toHaveBeenCalled();
+        });
+
+        it('clears state after keep', async () => {
+            mockVscode.window.showInformationMessage.mockResolvedValue('Keep');
+            diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
+            await diffProvider.showChanges();
             expect(diffProvider.getPendingChanges()).toEqual([]);
-            expect(mockVscode.window.showInformationMessage).toHaveBeenCalledWith(
-                'All proposed changes have been rejected.'
-            );
         });
 
-        it('hides status bar buttons', async () => {
+        it('clears state after undo', async () => {
+            mockVscode.window.showInformationMessage.mockResolvedValue('Undo');
             diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
-
-            // Get references to the created status bar items
-            const statusBarItems = mockVscode.window.createStatusBarItem.mock.results;
-
-            await diffProvider.rejectChanges();
-
-            // Both status bar items should have hide() called
-            for (const item of statusBarItems) {
-                expect(item.value.hide).toHaveBeenCalled();
-            }
+            await diffProvider.showChanges();
+            expect(diffProvider.getPendingChanges()).toEqual([]);
         });
     });
 
@@ -239,11 +216,8 @@ describe('DiffProvider', () => {
         it('returns copy of pending changes', () => {
             const changes = [makeFakeChange()];
             diffProvider.setPendingChanges('sess-1', changes);
-
             const result = diffProvider.getPendingChanges();
             expect(result).toEqual(changes);
-
-            // Verify it's a copy, not the same reference
             expect(result).not.toBe(changes);
         });
 
@@ -253,19 +227,9 @@ describe('DiffProvider', () => {
     });
 
     describe('dispose', () => {
-        it('cleans up all resources', () => {
+        it('cleans up and clears pending changes', () => {
             diffProvider.setPendingChanges('sess-1', [makeFakeChange()]);
-
-            const statusBarItems = mockVscode.window.createStatusBarItem.mock.results;
-
             diffProvider.dispose();
-
-            // Status bar items should be disposed
-            for (const item of statusBarItems) {
-                expect(item.value.dispose).toHaveBeenCalled();
-            }
-
-            // Pending changes should be cleared
             expect(diffProvider.getPendingChanges()).toEqual([]);
         });
     });
