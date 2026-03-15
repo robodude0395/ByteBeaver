@@ -91,6 +91,7 @@ PATCH_FILE: path/to/file.py
 
 ## Rules
 - When asked about the workspace, project, or code: USE tools first, then answer based on what you find.
+- When asked "what is the workspace" or "where am I": use list_directory(".") to show the project contents — never give a vague answer.
 - When asked to make changes: read the relevant files first, then use WRITE_FILE or PATCH_FILE.
 - For simple greetings or general questions unrelated to the workspace, just respond naturally — no need for tools.
 - Always explain what you're doing and why.
@@ -111,7 +112,9 @@ def _parse_action(response: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     Returns:
         Tuple of (tool_name, arguments) if found, None otherwise.
     """
-    pattern = r'ACTION:\s*(\w+)\s*\n```(?:json)?\s*\n(.*?)```'
+    # Match tool name, tolerating optional parenthesized args the LLM
+    # sometimes appends (e.g. 'ACTION: list_directory(".")').
+    pattern = r'ACTION:\s*(\w+)[^\n]*\n```(?:json)?\s*\n(.*?)```'
     match = re.search(pattern, response, re.DOTALL)
     if not match:
         return None
