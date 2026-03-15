@@ -21,6 +21,7 @@ from typing import Optional, List, Dict, Any, Iterator, Tuple
 
 from llm.client import LLMClient
 from tools.base import ToolSystem
+from tools.remote_filesystem import ProxyUnavailableError
 from agent.models import FileChange, ToolCall, ChangeType
 from server.validation import validate_llm_output_path
 
@@ -262,6 +263,14 @@ def _execute_tool(
         else:
             return str(result)
 
+    except ProxyUnavailableError as e:
+        return (
+            f"Error: {e}\n\n"
+            "The VSCode file proxy is not reachable. File write/read operations "
+            "on the user's workspace are unavailable right now. Do NOT retry "
+            "file tools — instead, tell the user the file proxy appears to be "
+            "down and suggest they check that the VSCode extension is running."
+        )
     except Exception as e:
         return f"Error: {e}"
 

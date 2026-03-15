@@ -492,6 +492,15 @@ async def process_prompt_stream(request: PromptRequest):
                 workspace_path=request.workspace_path,
                 file_proxy_url=request.file_proxy_url,
             )
+
+            # Early connectivity check for remote workspaces
+            if request.file_proxy_url and hasattr(tool_system.filesystem, 'check_connectivity'):
+                if not tool_system.filesystem.check_connectivity():
+                    logger.warning(
+                        "File proxy at %s is unreachable — file tools will be unavailable",
+                        request.file_proxy_url,
+                    )
+
             agent = AgentLoop(
                 llm_client=llm_client,
                 tool_system=tool_system,
