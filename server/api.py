@@ -378,11 +378,18 @@ async def process_prompt(request: PromptRequest):
             workspace_path=request.workspace_path,
             file_proxy_url=request.file_proxy_url,
         )
+        # Pass context_window from config so the agent loop can
+        # enforce token budgets and avoid exceeding the model's limit.
+        ctx_window = 8192  # safe default
+        if config and hasattr(config.llm, "context_window"):
+            ctx_window = config.llm.context_window
+
         agent = AgentLoop(
             llm_client=llm_client,
             tool_system=tool_system,
             context_engine=context_engine,
             workspace_path=request.workspace_path,
+            context_window=ctx_window,
         )
 
         result = agent.run(
@@ -508,11 +515,17 @@ async def process_prompt_stream(request: PromptRequest):
                         request.file_proxy_url,
                     )
 
+            # Pass context_window from config for token budget enforcement.
+            ctx_window = 8192
+            if config and hasattr(config.llm, "context_window"):
+                ctx_window = config.llm.context_window
+
             agent = AgentLoop(
                 llm_client=llm_client,
                 tool_system=tool_system,
                 context_engine=context_engine,
                 workspace_path=request.workspace_path,
+                context_window=ctx_window,
             )
 
             full_response = ""

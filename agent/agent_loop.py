@@ -10,10 +10,22 @@ The loop:
 1. Send user message + system prompt (with tool descriptions) to LLM
 2. If LLM responds with ACTION: tool_call → execute tool, feed result back, goto 2
 3. If LLM responds with plain text (no action) → return as final answer
+
+Robustness features:
+- Token budget enforcement: counts tokens before each LLM call and trims
+  conversation history to stay within the context window.
+- Auto-read on errors: when the user's message contains error output,
+  extracts file paths and pre-reads them so the LLM sees actual file
+  contents instead of hallucinating from memory.
+- Post-write validation: after write_file, runs a syntax check and feeds
+  errors back into the loop for self-correction.
+- Tool result truncation: large tool outputs are truncated to stay within
+  budget.
 """
 
 import json
 import logging
+import os
 import re
 import uuid
 import difflib
@@ -24,13 +36,24 @@ from tools.base import ToolSystem
 from tools.remote_filesystem import ProxyUnavailableError
 from agent.models import FileChange, ToolCall, ChangeType
 from server.validation import validate_llm_output_path
+from utils.tokens import count_tokens, truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 10
 
+# Maximum tokens for a single tool result fed back to the LLM.
+MAX_TOOL_RESULT_TOKENS = 1500
 
-SYSTEM_PROMPT = """You are ByteBeaver, a helpful AI coding assistant embedded in the user's local development environment. You have direct access to the user's workspace through tools.
+# Maximum tokens for the workspace file tree in the system prompt.
+MAX_TREE_TOKENS = 400
+
+# Reserve tokens for the LLM's generation (must match max_tokens sent to LLM).
+GENERATION_RESERVE = 2048
+
+
+SYSTEM_PROMPT = """\
+You are ByteBeaver, a helpful AI coding assistant embedded in the user's local development environment. You have direct access to the user's workspace through tools.
 
 ## Personality
 - You're like a knowledgeable senior dev sitting next to the user — concise, confident, and friendly.
@@ -107,6 +130,20 @@ PATCH_FILE: path/to/file.py
 +new line
 ```
 
+## Error Fixing Rules
+When the user shares an error, traceback, or asks you to fix/debug code:
+1. ALWAYS use read_file first to get the CURRENT file contents — never work from memory.
+2. Make targeted, minimal changes. Do NOT rewrite the entire file unless necessary.
+3. Prefer PATCH_FILE for small fixes. Use WRITE_FILE only for full rewrites.
+4. After fixing, briefly explain what was wrong and what you changed.
+
+## Code Generation Rules
+When writing new code (creating files, implementing features):
+1. For large tasks, break the work into multiple smaller files or functions.
+2. Keep individual files under 150 lines when possible.
+3. Write complete, runnable code — no placeholders like "# TODO: implement this".
+4. Include necessary imports and handle common edge cases.
+
 ## Rules
 - When asked about the workspace, project, or code: USE tools first, then answer based on what you find.
 - When asked "what is the workspace" or "where am I": use list_directory(".") to show the project contents — never give a vague answer.
@@ -116,8 +153,90 @@ PATCH_FILE: path/to/file.py
 - If a tool call fails, do NOT retry the same call more than once. Explain the error to the user instead.
 - Always explain what you're doing and why.
 - Be conversational. You're a partner, not a command executor.
+- NEVER fabricate file contents from memory. If you need to see a file, read it.
 """
 
+
+# ---------------------------------------------------------------------------
+# File-path extraction for auto-read on error messages
+# ---------------------------------------------------------------------------
+
+# Common patterns for file paths in error output / tracebacks
+_FILE_PATH_PATTERNS = [
+    # Python traceback: File "path/to/file.py", line 42
+    re.compile(r'File "([^"]+\.py)"', re.IGNORECASE),
+    # Generic: path/to/file.ext (with common code extensions)
+    re.compile(
+        r'(?:^|\s)((?:[\w./\\-]+/)?[\w.-]+\.(?:py|js|ts|tsx|jsx|java|cpp|c|h|go|rs|rb|php|cs|swift|kt))\b'
+    ),
+    # Node.js style: at Object.<anonymous> (/path/to/file.js:10:5)
+    re.compile(r'\(([^()]+\.(?:js|ts|tsx|jsx)):[\d]+:[\d]+\)'),
+]
+
+
+def _extract_file_paths_from_message(message: str) -> List[str]:
+    """Extract plausible file paths from an error message or traceback.
+
+    Returns de-duplicated list of paths (order preserved), limited to 5.
+    """
+    seen: set = set()
+    paths: List[str] = []
+    for pattern in _FILE_PATH_PATTERNS:
+        for match in pattern.finditer(message):
+            p = match.group(1).strip()
+            # Skip obviously non-file strings
+            if p.startswith("http") or p.startswith("<") or len(p) > 200:
+                continue
+            if p not in seen:
+                seen.add(p)
+                paths.append(p)
+    return paths[:5]
+
+
+def _message_looks_like_error(message: str) -> bool:
+    """Heuristic: does the user's message contain error output?"""
+    error_indicators = [
+        "Traceback (most recent call last)",
+        "Error:",
+        "error:",
+        "SyntaxError",
+        "TypeError",
+        "ValueError",
+        "NameError",
+        "ImportError",
+        "ModuleNotFoundError",
+        "AttributeError",
+        "KeyError",
+        "IndexError",
+        "FileNotFoundError",
+        "RuntimeError",
+        "Exception",
+        "FAILED",
+        "npm ERR!",
+        "ReferenceError",
+        "Cannot find module",
+        "Segmentation fault",
+        "panic:",
+        "undefined is not",
+        "is not defined",
+    ]
+    return any(indicator in message for indicator in error_indicators)
+
+
+# ---------------------------------------------------------------------------
+# Syntax validation commands by file extension
+# ---------------------------------------------------------------------------
+
+_SYNTAX_CHECK_COMMANDS: Dict[str, str] = {
+    ".py": 'python -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" {path}',
+    ".js": "node --check {path}",
+    ".ts": "node --check {path}",  # basic parse check; full check needs tsc
+}
+
+
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
 
 def _parse_action(response: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """
@@ -214,6 +333,10 @@ def _generate_diff(file_path: str, original: str, new: str) -> str:
     ))
 
 
+# ---------------------------------------------------------------------------
+# Tool execution
+# ---------------------------------------------------------------------------
+
 def _execute_tool(
     tool_name: str,
     arguments: Dict[str, Any],
@@ -275,6 +398,90 @@ def _execute_tool(
         return f"Error: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Token budget helpers
+# ---------------------------------------------------------------------------
+
+def _count_messages_tokens(messages: List[Dict[str, str]]) -> int:
+    """Count total tokens across all messages (content only).
+
+    Adds a small per-message overhead (~4 tokens) for role/formatting.
+    """
+    total = 0
+    for msg in messages:
+        total += count_tokens(msg.get("content", "")) + 4
+    return total
+
+
+def _trim_messages_to_budget(
+    messages: List[Dict[str, str]],
+    max_input_tokens: int,
+) -> List[Dict[str, str]]:
+    """Trim messages to fit within *max_input_tokens*.
+
+    Strategy — keep in priority order:
+      1. System prompt (messages[0]) — always kept, but tree section may
+         be truncated by the caller before we get here.
+      2. The last user message (messages[-1]) — always kept.
+      3. Recent messages — kept from the end, dropping oldest first.
+
+    Returns a new list (does not mutate the input).
+    """
+    if not messages:
+        return messages
+
+    system_msg = messages[0]  # always system
+    last_msg = messages[-1]   # current user message
+    middle = messages[1:-1]   # conversation history + tool rounds
+
+    # Tokens for the parts we always keep
+    fixed_cost = count_tokens(system_msg["content"]) + 4
+    fixed_cost += count_tokens(last_msg["content"]) + 4
+
+    remaining_budget = max_input_tokens - fixed_cost
+    if remaining_budget <= 0:
+        # Even system + user message is over budget — truncate system prompt
+        logger.warning(
+            "System prompt + user message alone exceed budget (%d tokens). "
+            "Truncating system prompt.", fixed_cost,
+        )
+        truncated_system = truncate_to_tokens(
+            system_msg["content"],
+            max_input_tokens - count_tokens(last_msg["content"]) - 100,
+        )
+        return [
+            {"role": "system", "content": truncated_system},
+            last_msg,
+        ]
+
+    # Walk backwards through middle messages, keeping as many as fit
+    kept: List[Dict[str, str]] = []
+    for msg in reversed(middle):
+        cost = count_tokens(msg.get("content", "")) + 4
+        if cost <= remaining_budget:
+            kept.append(msg)
+            remaining_budget -= cost
+        else:
+            # Try to fit a truncated version if it's a big tool result
+            if remaining_budget > 100:
+                truncated = truncate_to_tokens(msg["content"], remaining_budget - 10)
+                kept.append({"role": msg["role"], "content": truncated})
+                remaining_budget = 0
+            break
+
+    kept.reverse()
+
+    trimmed = [system_msg] + kept + [last_msg]
+    logger.debug(
+        "Trimmed messages: %d → %d messages, ~%d tokens",
+        len(messages), len(trimmed), _count_messages_tokens(trimmed),
+    )
+    return trimmed
+
+
+# ---------------------------------------------------------------------------
+# AgentLoop
+# ---------------------------------------------------------------------------
 
 class AgentLoop:
     """
@@ -282,6 +489,12 @@ class AgentLoop:
 
     Replaces the old intent classifier + separate chat/explore/code_task paths
     with a single ReAct-style loop.
+
+    Robustness features (Phase 7):
+    - Token budget enforcement per LLM call
+    - Auto-read file contents when user pastes errors
+    - Post-write syntax validation with self-correction
+    - Tool result truncation
     """
 
     def __init__(
@@ -290,11 +503,107 @@ class AgentLoop:
         tool_system: ToolSystem,
         context_engine: Optional[Any] = None,
         workspace_path: str = ".",
+        context_window: int = 8192,
     ):
         self.llm_client = llm_client
         self.tool_system = tool_system
         self.context_engine = context_engine
         self.workspace_path = workspace_path
+        self.context_window = context_window
+        # Max tokens the LLM can use for input (reserve space for generation)
+        self.max_input_tokens = context_window - GENERATION_RESERVE
+
+    # ------------------------------------------------------------------
+    # Pre-processing: enrich user message with file contents on errors
+    # ------------------------------------------------------------------
+
+    def _enrich_message_with_file_context(self, message: str) -> str:
+        """If the message contains error output, auto-read referenced files.
+
+        This prevents the LLM from hallucinating file contents when the user
+        pastes a traceback or error and asks for a fix.
+        """
+        if not _message_looks_like_error(message):
+            return message
+
+        file_paths = _extract_file_paths_from_message(message)
+        if not file_paths:
+            return message
+
+        pre_context_parts: List[str] = []
+        tokens_used = 0
+        max_context_tokens = 1500  # budget for pre-read files
+
+        for fp in file_paths[:3]:
+            try:
+                content = _execute_tool(
+                    "read_file", {"path": fp},
+                    self.tool_system, self.context_engine, self.workspace_path,
+                )
+                if content.startswith("Error:"):
+                    continue
+                content_tokens = count_tokens(content)
+                if tokens_used + content_tokens > max_context_tokens:
+                    content = truncate_to_tokens(content, max_context_tokens - tokens_used)
+                pre_context_parts.append(
+                    f"[Auto-read: current contents of {fp}]\n```\n{content}\n```"
+                )
+                tokens_used += count_tokens(content)
+                if tokens_used >= max_context_tokens:
+                    break
+            except Exception as exc:
+                logger.debug("Auto-read failed for %s: %s", fp, exc)
+
+        if pre_context_parts:
+            enrichment = "\n\n".join(pre_context_parts)
+            return (
+                f"{message}\n\n"
+                f"--- File contents referenced in the error above ---\n"
+                f"{enrichment}"
+            )
+        return message
+
+    # ------------------------------------------------------------------
+    # Post-write validation
+    # ------------------------------------------------------------------
+
+    def _validate_written_file(self, file_path: str) -> Optional[str]:
+        """Run a syntax check on a file after write_file.
+
+        Returns error output if the check fails, None if it passes or
+        no checker is available for this file type.
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        cmd_template = _SYNTAX_CHECK_COMMANDS.get(ext)
+        if not cmd_template:
+            return None
+
+        cmd = cmd_template.format(path=file_path)
+        try:
+            result = _execute_tool(
+                "run_command", {"command": cmd},
+                self.tool_system, self.context_engine, self.workspace_path,
+            )
+            # run_command returns JSON with exit_code, stdout, stderr
+            if isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                except json.JSONDecodeError:
+                    parsed = {"exit_code": 1, "stderr": result}
+            else:
+                parsed = result
+
+            if isinstance(parsed, dict) and parsed.get("exit_code", 0) != 0:
+                stderr = parsed.get("stderr", "")
+                stdout = parsed.get("stdout", "")
+                return (stderr or stdout or "Syntax check failed").strip()
+        except Exception as exc:
+            logger.debug("Post-write validation failed for %s: %s", file_path, exc)
+        return None
+
+    # ------------------------------------------------------------------
+    # Main loop (non-streaming)
+    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -318,19 +627,28 @@ class AgentLoop:
                 - file_changes: List of FileChange objects (if any)
                 - tool_calls: List of tool calls made during the loop
         """
+        # Enrich message with file contents if it looks like an error
+        message = self._enrich_message_with_file_context(message)
+
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
-        seen_tool_calls: set = set()  # Track ALL tool calls, not just consecutive
-        failed_tool_calls: set = set()  # Track calls that returned errors
+        seen_tool_calls: set = set()
+        failed_tool_calls: set = set()
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop round %d", round_num + 1)
 
+            # --- Token budget enforcement ---
+            messages = _trim_messages_to_budget(messages, self.max_input_tokens)
+
+            # Use lower temperature for code-heavy requests
+            temp = self._pick_temperature(message)
+
             response = self.llm_client.complete(
                 messages=messages,
-                temperature=0.3,
-                max_tokens=2048,
+                temperature=temp,
+                max_tokens=GENERATION_RESERVE,
             )
 
             logger.debug("LLM response (%d chars): %s", len(response), response[:200])
@@ -340,7 +658,6 @@ class AgentLoop:
 
             if action is None:
                 # No tool call — this is the final answer
-                # But still check for file change directives
                 file_changes = _parse_file_changes(response, self.workspace_path)
                 all_file_changes.extend(file_changes)
 
@@ -354,7 +671,7 @@ class AgentLoop:
             tool_name, arguments = action
             logger.info("Executing tool: %s(%s)", tool_name, json.dumps(arguments)[:200])
 
-            # Detect duplicate tool calls (same tool + same args, even non-consecutive)
+            # Detect duplicate tool calls
             current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
             if current_call_key in seen_tool_calls:
                 logger.warning("Repeated tool call detected: %s — forcing final answer", tool_name)
@@ -394,18 +711,34 @@ class AgentLoop:
             if result.startswith("Error:"):
                 failed_tool_calls.add(current_call_key)
 
+            # --- Truncate large tool results ---
+            result = truncate_to_tokens(result, MAX_TOOL_RESULT_TOKENS)
+
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
                 arguments=arguments,
                 result=result,
             ))
 
+            # --- Post-write validation ---
+            validation_note = ""
+            if tool_name == "write_file" and not result.startswith("Error:"):
+                file_path = arguments.get("path", "")
+                syntax_error = self._validate_written_file(file_path)
+                if syntax_error:
+                    validation_note = (
+                        f"\n\n⚠️ SYNTAX ERROR detected in {file_path} after writing:\n"
+                        f"{syntax_error}\n"
+                        f"You MUST fix this error now by reading the file and writing a corrected version."
+                    )
+                    logger.info("Post-write validation failed for %s: %s", file_path, syntax_error[:200])
+
             # Feed the result back to the LLM
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
                 "content": (
-                    f"OBSERVATION:\n{result}\n\n"
+                    f"OBSERVATION:\n{result}{validation_note}\n\n"
                     f"Above is the result of {tool_name}. "
                     f"Use more tools if needed to answer the user's request, "
                     f"or give your final answer. Do NOT repeat a tool call you already made."
@@ -419,6 +752,10 @@ class AgentLoop:
             "file_changes": all_file_changes,
             "tool_calls": tool_calls_made,
         }
+
+    # ------------------------------------------------------------------
+    # Streaming loop
+    # ------------------------------------------------------------------
 
     def run_streaming(
         self,
@@ -442,36 +779,37 @@ class AgentLoop:
         Yields:
             Event dicts
         """
+        # Enrich message with file contents if it looks like an error
+        message = self._enrich_message_with_file_context(message)
+
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
-        seen_tool_calls: set = set()  # Track ALL tool calls, not just consecutive
-        failed_tool_calls: set = set()  # Track calls that returned errors
+        seen_tool_calls: set = set()
+        failed_tool_calls: set = set()
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop (streaming) round %d", round_num + 1)
 
-            # Use non-streaming call to get the full response so we can
-            # check for ACTION blocks before deciding what to do.
+            # --- Token budget enforcement ---
+            messages = _trim_messages_to_budget(messages, self.max_input_tokens)
+
+            temp = self._pick_temperature(message)
+
             response = self.llm_client.complete(
                 messages=messages,
-                temperature=0.3,
-                max_tokens=2048,
+                temperature=temp,
+                max_tokens=GENERATION_RESERVE,
             )
 
             action = _parse_action(response)
 
             if action is None:
-                # Final answer — no ACTION block found.
-                # Stream the already-obtained response token-by-token to the
-                # client so the UI feels responsive.  We do NOT re-call the
-                # LLM (the old code did a second stream_complete call which
-                # was non-deterministic and could produce different output).
-                chunk_size = 4  # characters per "token" event
+                # Final answer — stream the already-obtained response
+                chunk_size = 4
                 for i in range(0, len(response), chunk_size):
                     yield {"event": "token", "data": response[i:i + chunk_size]}
 
-                # Parse file changes from the response
                 file_changes = _parse_file_changes(response, self.workspace_path)
                 for fc in file_changes:
                     all_file_changes.append(fc)
@@ -490,7 +828,7 @@ class AgentLoop:
             # Tool call round
             tool_name, arguments = action
 
-            # Detect duplicate tool calls (same tool + same args, even non-consecutive)
+            # Detect duplicate tool calls
             current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
             if current_call_key in seen_tool_calls:
                 logger.warning("Repeated tool call detected (streaming): %s — forcing final answer", tool_name)
@@ -532,6 +870,9 @@ class AgentLoop:
             if result.startswith("Error:"):
                 failed_tool_calls.add(current_call_key)
 
+            # --- Truncate large tool results ---
+            result = truncate_to_tokens(result, MAX_TOOL_RESULT_TOKENS)
+
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -540,12 +881,25 @@ class AgentLoop:
 
             yield {"event": "tool_result", "data": result[:500]}
 
+            # --- Post-write validation ---
+            validation_note = ""
+            if tool_name == "write_file" and not result.startswith("Error:"):
+                file_path = arguments.get("path", "")
+                syntax_error = self._validate_written_file(file_path)
+                if syntax_error:
+                    validation_note = (
+                        f"\n\n⚠️ SYNTAX ERROR detected in {file_path} after writing:\n"
+                        f"{syntax_error}\n"
+                        f"You MUST fix this error now by reading the file and writing a corrected version."
+                    )
+                    logger.info("Post-write validation failed for %s: %s", file_path, syntax_error[:200])
+
             # Feed result back
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
                 "content": (
-                    f"OBSERVATION:\n{result}\n\n"
+                    f"OBSERVATION:\n{result}{validation_note}\n\n"
                     f"Above is the result of {tool_name}. "
                     f"Use more tools if needed to answer the user's request, "
                     f"or give your final answer. Do NOT repeat a tool call you already made."
@@ -562,23 +916,45 @@ class AgentLoop:
             },
         }
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _pick_temperature(self, message: str) -> float:
+        """Choose temperature based on the nature of the request.
+
+        Lower temperature for code generation / fixing to reduce randomness.
+        """
+        code_keywords = [
+            "create", "write", "fix", "implement", "build", "make",
+            "generate", "code", "function", "class", "refactor",
+            "error", "bug", "traceback", "debug",
+        ]
+        msg_lower = message.lower()
+        if any(kw in msg_lower for kw in code_keywords):
+            return 0.1
+        return 0.3
+
     def _build_messages(
         self,
         message: str,
         conversation_history: Optional[List[Dict[str, str]]],
     ) -> List[Dict[str, str]]:
-        """Build the message list with system prompt and history."""
-        # Add workspace file tree to system prompt if available
+        """Build the message list with system prompt and history.
+
+        The workspace file tree is appended to the system prompt but
+        truncated to MAX_TREE_TOKENS to avoid blowing the context budget.
+        """
         system_content = SYSTEM_PROMPT
 
         # When using a remote file proxy, build the tree via the proxy
-        # instead of the local filesystem (which is the server's tmp dir).
         from tools.remote_filesystem import RemoteFilesystemTools
         if isinstance(self.tool_system.filesystem, RemoteFilesystemTools):
             try:
                 tree = self._build_remote_tree()
                 if tree:
                     tree_str = self._format_tree(tree)
+                    tree_str = truncate_to_tokens(tree_str, MAX_TREE_TOKENS)
                     system_content += f"\n\n## Current Workspace Structure\n{tree_str}"
             except Exception as e:
                 logger.warning("Failed to get remote file tree: %s", e)
@@ -586,6 +962,7 @@ class AgentLoop:
             try:
                 tree = self.context_engine.get_file_tree(self.workspace_path)
                 tree_str = self._format_tree(tree)
+                tree_str = truncate_to_tokens(tree_str, MAX_TREE_TOKENS)
                 system_content += f"\n\n## Current Workspace Structure\n{tree_str}"
             except Exception as e:
                 logger.warning("Failed to get file tree: %s", e)
@@ -645,7 +1022,6 @@ class AgentLoop:
 
         for entry in sorted(entries):
             if entry.endswith("/"):
-                # Directory
                 dir_name = entry.rstrip("/")
                 child_path = f"{path}/{dir_name}" if path != "." else dir_name
                 if depth < MAX_DEPTH:
@@ -656,7 +1032,6 @@ class AgentLoop:
                             continue
                     except Exception:
                         pass
-                # Fallback: just show the directory name without children
                 children.append({"name": dir_name, "type": "directory", "children": []})
             else:
                 children.append({"name": entry, "type": "file"})
