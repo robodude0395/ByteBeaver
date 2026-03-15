@@ -6,6 +6,7 @@ export interface PromptRequest {
     prompt: string;
     workspace_path: string;
     session_id?: string;
+    file_proxy_url?: string;
 }
 
 export interface ApplyChangesRequest {
@@ -81,6 +82,7 @@ export interface StreamEvent {
 
 export class AgentClient {
     private client: AxiosInstance;
+    private fileProxyPort: number | null = null;
 
     constructor(baseUrl: string) {
         this.client = axios.create({
@@ -90,6 +92,38 @@ export class AgentClient {
                 'Content-Type': 'application/json',
             },
         });
+    }
+
+    setFileProxyPort(port: number): void {
+        this.fileProxyPort = port;
+    }
+
+    private getFileProxyUrl(): string | undefined {
+        if (this.fileProxyPort) {
+            return `http://${this.getClientIp()}:${this.fileProxyPort}`;
+        }
+        return undefined;
+    }
+
+    /**
+     * Get the client machine's IP address that the remote server can reach.
+     * Falls back to localhost if detection fails.
+     */
+    private getClientIp(): string {
+        try {
+            const os = require('os');
+            const interfaces = os.networkInterfaces();
+            for (const name of Object.keys(interfaces)) {
+                for (const iface of interfaces[name] ?? []) {
+                    if (iface.family === 'IPv4' && !iface.internal) {
+                        return iface.address;
+                    }
+                }
+            }
+        } catch {
+            // fall through
+        }
+        return 'localhost';
     }
 
     async sendPrompt(
@@ -102,6 +136,10 @@ export class AgentClient {
                 prompt,
                 workspace_path: workspacePath,
             };
+            const proxyUrl = this.getFileProxyUrl();
+            if (proxyUrl) {
+                payload.file_proxy_url = proxyUrl;
+            }
             if (sessionId) {
                 payload.session_id = sessionId;
             }
@@ -214,6 +252,10 @@ export class AgentClient {
             prompt,
             workspace_path: workspacePath,
         };
+        const proxyUrl = this.getFileProxyUrl();
+        if (proxyUrl) {
+            payload.file_proxy_url = proxyUrl;
+        }
         if (sessionId) {
             payload.session_id = sessionId;
         }

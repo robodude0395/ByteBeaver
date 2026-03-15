@@ -4,6 +4,7 @@ import { ChatPanel } from './chatPanel';
 import { DiffProvider } from './diffProvider';
 import { AgentStatusBar } from './statusBar';
 import { registerCommands } from './commands';
+import { FileProxyServer } from './fileProxy';
 
 export function activate(context: vscode.ExtensionContext): void {
     // Read configuration
@@ -12,6 +13,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Initialize agent client
     const agentClient = new AgentClient(serverUrl);
+
+    // Start file proxy server so the remote agent can access local files
+    const fileProxy = new FileProxyServer();
+    fileProxy.start().then(port => {
+        console.log(`File proxy started on port ${port}`);
+        agentClient.setFileProxyPort(port);
+    }).catch(err => {
+        console.error('Failed to start file proxy:', err);
+    });
+    context.subscriptions.push({ dispose: () => fileProxy.stop() });
 
     // Create and register chat panel
     const chatPanel = new ChatPanel(context.extensionUri, agentClient);
