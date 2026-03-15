@@ -29,8 +29,8 @@ fi
 if [ -z "$VIRTUAL_ENV" ]; then
     echo "Warning: No virtual environment detected"
     echo "It's recommended to run this in a virtual environment:"
-    echo "  python -m venv venv"
-    echo "  source venv/bin/activate  # On Windows: venv\\Scripts\\activate"
+    echo "  python -m venv .venv"
+    echo "  source .venv/bin/activate  # On Windows: .venv\\Scripts\\activate"
     echo "  pip install -r requirements.txt"
     echo ""
 fi

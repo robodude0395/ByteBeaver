@@ -4,7 +4,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 import uuid
 from datetime import datetime
@@ -136,21 +136,30 @@ class PromptRequest(BaseModel):
     prompt: str
     workspace_path: str
     session_id: Optional[str] = None
+    file_proxy_url: Optional[str] = None
 
     @field_validator("prompt")
     @classmethod
     def check_prompt(cls, v: str) -> str:
         return validate_prompt(v)
 
-    @field_validator("workspace_path")
-    @classmethod
-    def check_workspace_path(cls, v: str) -> str:
-        return validate_workspace_path(v)
-
     @field_validator("session_id")
     @classmethod
     def check_session_id(cls, v: Optional[str]) -> Optional[str]:
         return validate_session_id(v)
+
+    @model_validator(mode="after")
+    def check_workspace_path(self) -> "PromptRequest":
+        """Validate workspace_path only when no file proxy is provided.
+
+        When file_proxy_url is set, the workspace_path is the client's
+        local path and won't exist on the server — skip the directory check.
+        """
+        if not self.file_proxy_url:
+            self.workspace_path = validate_workspace_path(self.workspace_path)
+        elif not self.workspace_path or not self.workspace_path.strip():
+            raise ValueError("workspace_path must not be empty")
+        return self
 
 
 class TaskInfo(BaseModel):
@@ -365,7 +374,10 @@ async def process_prompt(request: PromptRequest):
 
     try:
         # --- Unified Agent Loop (ReAct pattern) ---
-        tool_system = ToolSystem(workspace_path=request.workspace_path)
+        tool_system = ToolSystem(
+            workspace_path=request.workspace_path,
+            file_proxy_url=request.file_proxy_url,
+        )
         agent = AgentLoop(
             llm_client=llm_client,
             tool_system=tool_system,
@@ -476,7 +488,10 @@ async def process_prompt_stream(request: PromptRequest):
 
         try:
             # --- Unified Agent Loop (ReAct pattern) ---
-            tool_system = ToolSystem(workspace_path=request.workspace_path)
+            tool_system = ToolSystem(
+                workspace_path=request.workspace_path,
+                file_proxy_url=request.file_proxy_url,
+            )
             agent = AgentLoop(
                 llm_client=llm_client,
                 tool_system=tool_system,

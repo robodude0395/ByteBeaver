@@ -23,19 +23,35 @@ class ToolSystem:
     It supports filesystem, terminal, and web tools.
     """
 
-    def __init__(self, workspace_path: str, config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        workspace_path: str,
+        config: Optional[Dict[str, Any]] = None,
+        file_proxy_url: Optional[str] = None,
+    ):
         """
         Initialize tool system with workspace and configuration.
 
         Args:
             workspace_path: Absolute path to workspace root directory
             config: Optional configuration dictionary for tool settings
+            file_proxy_url: If set, filesystem tools proxy through the
+                VSCode extension at this URL instead of using local disk.
         """
         self.workspace_path = workspace_path
         self.config = config or {}
+        self.file_proxy_url = file_proxy_url
 
-        # Initialize filesystem tools
-        self.filesystem = FilesystemTools(workspace_path, self.config.get('filesystem', {}))
+        # Initialize filesystem tools — remote proxy or local
+        if file_proxy_url:
+            from tools.remote_filesystem import RemoteFilesystemTools
+            self.filesystem = RemoteFilesystemTools(
+                file_proxy_url, self.config.get('filesystem', {})
+            )
+        else:
+            self.filesystem = FilesystemTools(
+                workspace_path, self.config.get('filesystem', {})
+            )
 
         # Initialize terminal tools
         self.terminal = TerminalTools(workspace_path, self.config.get('terminal', {}))

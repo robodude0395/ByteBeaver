@@ -1,6 +1,6 @@
 #!/bin/bash
 # Byte Beaver — Local Offline Coding Agent
-# Automated setup script: creates venv, installs deps, downloads models, builds extension.
+# Automated setup script: creates .venv, installs deps, downloads models, builds extension.
 #
 # Usage:
 #   chmod +x scripts/install.sh
@@ -26,15 +26,15 @@ echo ""
 
 echo "[1/5] Setting up Python virtual environment..."
 
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
-    echo "  Created venv/"
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv
+    echo "  Created .venv/"
 else
-    echo "  venv/ already exists, skipping creation"
+    echo "  .venv/ already exists, skipping creation"
 fi
 
-source venv/bin/activate
-echo "  Activated venv ($(python3 --version))"
+source .venv/bin/activate
+echo "  Activated .venv ($(python3 --version))"
 
 # ── 2. Install Python dependencies ────────────────────────────────────────
 
@@ -162,7 +162,7 @@ echo "  2. Start the LLM server:"
 echo "     ./scripts/run_llm.sh"
 echo ""
 echo "  3. Start the Agent server (in another terminal):"
-echo "     source venv/bin/activate"
+echo "     source .venv/bin/activate"
 echo "     ./scripts/run_agent.sh"
 echo ""
 echo "  4. Install the VSCode extension:"

@@ -25,7 +25,7 @@ sudo cp build/bin/llama-server /usr/local/bin/
 
 ## Setup
 
-The install script handles everything: venv, pip deps, model downloads (~4.4GB LLM + embedding model), config file, and extension build.
+The install script handles everything: .venv, pip deps, model downloads (~4.4GB LLM + embedding model), config file, and extension build.
 
 ```bash
 git clone <your-repo-url> byte-beaver
@@ -45,7 +45,7 @@ You need two terminals:
 ./scripts/run_llm.sh
 
 # Terminal 2 — Agent server (FastAPI)
-source venv/bin/activate
+source .venv/bin/activate
 ./scripts/run_agent.sh
 ```
 

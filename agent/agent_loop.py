@@ -57,6 +57,14 @@ After you use a tool, you'll receive the result as an OBSERVATION. You can then 
 read_file(path: str) → str
   Read the contents of a file. Path is relative to workspace root.
 
+write_file(path: str, contents: str) → None
+  Write contents to a file. Creates the file if it doesn't exist, overwrites if it does.
+  Creates parent directories automatically. Path is relative to workspace root.
+
+create_file(path: str) → None
+  Create an empty file. Creates parent directories automatically.
+  Path is relative to workspace root.
+
 list_directory(path: str) → list
   List files and subdirectories. Use "." for workspace root.
   Directories have a trailing "/" (e.g., "src/"), files do not (e.g., "main.py").
@@ -73,7 +81,16 @@ semantic_search(query: str) → list
 
 ## Making File Changes
 
-When you need to create or modify files, use these directives in your response:
+When the user asks you to create or modify files, ALWAYS use the write_file tool via an ACTION block:
+
+ACTION: write_file
+```json
+{"path": "path/to/file.py", "contents": "# file contents here"}
+```
+
+This writes the file directly to the workspace. Do NOT just show code in chat — use write_file to actually create it.
+
+For reviewing changes before applying (optional), you can also use these directives:
 
 WRITE_FILE: path/to/file.py
 ```python
@@ -92,8 +109,10 @@ PATCH_FILE: path/to/file.py
 ## Rules
 - When asked about the workspace, project, or code: USE tools first, then answer based on what you find.
 - When asked "what is the workspace" or "where am I": use list_directory(".") to show the project contents — never give a vague answer.
-- When asked to make changes: read the relevant files first, then use WRITE_FILE or PATCH_FILE.
+- When asked to create a file: use the write_file tool via an ACTION block. Do NOT just show code in chat.
+- When asked to modify a file: read it first with read_file, then use write_file to save the updated version.
 - For simple greetings or general questions unrelated to the workspace, just respond naturally — no need for tools.
+- If a tool call fails, do NOT retry the same call more than once. Explain the error to the user instead.
 - Always explain what you're doing and why.
 - Be conversational. You're a partner, not a command executor.
 """
@@ -204,6 +223,10 @@ def _execute_tool(
     """
     Execute a tool call and return the result as a string for the LLM.
     """
+    logger.info(
+        "Executing tool %s with args %s (workspace: %s)",
+        tool_name, json.dumps(arguments)[:200], workspace_path,
+    )
     try:
         if tool_name == "semantic_search" and context_engine:
             query = arguments.get("query", "")
@@ -231,6 +254,8 @@ def _execute_tool(
 
         # Format result for LLM consumption
         if isinstance(result, list):
+            if not result:
+                return "(empty — no entries found)"
             return "\n".join(str(item) for item in result)
         elif isinstance(result, dict):
             return json.dumps(result, indent=2, default=str)
@@ -287,7 +312,8 @@ class AgentLoop:
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
-        last_tool_call: Optional[Tuple[str, str]] = None  # (name, args_json)
+        seen_tool_calls: set = set()  # Track ALL tool calls, not just consecutive
+        failed_tool_calls: set = set()  # Track calls that returned errors
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop round %d", round_num + 1)
@@ -319,26 +345,45 @@ class AgentLoop:
             tool_name, arguments = action
             logger.info("Executing tool: %s(%s)", tool_name, json.dumps(arguments)[:200])
 
-            # Detect duplicate consecutive tool calls (same tool + same args)
+            # Detect duplicate tool calls (same tool + same args, even non-consecutive)
             current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
-            if current_call_key == last_tool_call:
-                logger.warning("Duplicate tool call detected: %s — forcing final answer", tool_name)
+            if current_call_key in seen_tool_calls:
+                logger.warning("Repeated tool call detected: %s — forcing final answer", tool_name)
                 messages.append({"role": "assistant", "content": response})
                 messages.append({
                     "role": "user",
                     "content": (
-                        "You already called this exact tool with the same arguments. "
+                        "You already called this exact tool with the same arguments earlier. "
                         "Do NOT call it again. Summarise what you know so far and "
                         "give your final answer to the user now."
                     ),
                 })
                 continue
-            last_tool_call = current_call_key
+
+            # If we've had 3+ failed tool calls, force a final answer
+            if len(failed_tool_calls) >= 3:
+                logger.warning("Too many failed tool calls (%d) — forcing final answer", len(failed_tool_calls))
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Multiple tool calls have failed. Stop trying tools and "
+                        "give your final answer based on what you know. "
+                        "If you couldn't find the information, say so honestly."
+                    ),
+                })
+                continue
+
+            seen_tool_calls.add(current_call_key)
 
             result = _execute_tool(
                 tool_name, arguments,
                 self.tool_system, self.context_engine, self.workspace_path,
             )
+
+            # Track failed tool calls
+            if result.startswith("Error:"):
+                failed_tool_calls.add(current_call_key)
 
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
@@ -346,12 +391,7 @@ class AgentLoop:
                 result=result,
             ))
 
-            # Extract any text before the ACTION as partial reasoning
-            action_match = re.search(r'ACTION:', response)
-            reasoning = response[:action_match.start()].strip() if action_match else ""
-
             # Feed the result back to the LLM
-            # Add the assistant's response (with the action) and the observation
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
@@ -396,7 +436,8 @@ class AgentLoop:
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
-        last_tool_call: Optional[Tuple[str, str]] = None  # (name, args_json)
+        seen_tool_calls: set = set()  # Track ALL tool calls, not just consecutive
+        failed_tool_calls: set = set()  # Track calls that returned errors
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop (streaming) round %d", round_num + 1)
@@ -440,21 +481,36 @@ class AgentLoop:
             # Tool call round
             tool_name, arguments = action
 
-            # Detect duplicate consecutive tool calls
+            # Detect duplicate tool calls (same tool + same args, even non-consecutive)
             current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
-            if current_call_key == last_tool_call:
-                logger.warning("Duplicate tool call detected (streaming): %s — forcing final answer", tool_name)
+            if current_call_key in seen_tool_calls:
+                logger.warning("Repeated tool call detected (streaming): %s — forcing final answer", tool_name)
                 messages.append({"role": "assistant", "content": response})
                 messages.append({
                     "role": "user",
                     "content": (
-                        "You already called this exact tool with the same arguments. "
+                        "You already called this exact tool with the same arguments earlier. "
                         "Do NOT call it again. Summarise what you know so far and "
                         "give your final answer to the user now."
                     ),
                 })
                 continue
-            last_tool_call = current_call_key
+
+            # If we've had 3+ failed tool calls, force a final answer
+            if len(failed_tool_calls) >= 3:
+                logger.warning("Too many failed tool calls (%d, streaming) — forcing final answer", len(failed_tool_calls))
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Multiple tool calls have failed. Stop trying tools and "
+                        "give your final answer based on what you know. "
+                        "If you couldn't find the information, say so honestly."
+                    ),
+                })
+                continue
+
+            seen_tool_calls.add(current_call_key)
 
             yield {"event": "thinking", "data": f"Using tool: {tool_name}"}
 
@@ -462,6 +518,10 @@ class AgentLoop:
                 tool_name, arguments,
                 self.tool_system, self.context_engine, self.workspace_path,
             )
+
+            # Track failed tool calls
+            if result.startswith("Error:"):
+                failed_tool_calls.add(current_call_key)
 
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
