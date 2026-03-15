@@ -570,7 +570,19 @@ class AgentLoop:
         """Build the message list with system prompt and history."""
         # Add workspace file tree to system prompt if available
         system_content = SYSTEM_PROMPT
-        if self.context_engine:
+
+        # When using a remote file proxy, build the tree via the proxy
+        # instead of the local filesystem (which is the server's tmp dir).
+        from tools.remote_filesystem import RemoteFilesystemTools
+        if isinstance(self.tool_system.filesystem, RemoteFilesystemTools):
+            try:
+                tree = self._build_remote_tree()
+                if tree:
+                    tree_str = self._format_tree(tree)
+                    system_content += f"\n\n## Current Workspace Structure\n{tree_str}"
+            except Exception as e:
+                logger.warning("Failed to get remote file tree: %s", e)
+        elif self.context_engine:
             try:
                 tree = self.context_engine.get_file_tree(self.workspace_path)
                 tree_str = self._format_tree(tree)
@@ -611,3 +623,42 @@ class AgentLoop:
             lines.append(self._format_tree(child, indent + 1))
 
         return "\n".join(lines)
+
+    def _build_remote_tree(self, path: str = ".", depth: int = 0) -> Optional[Dict[str, Any]]:
+        """Build a file tree by calling list_directory through the remote proxy.
+
+        Recursively lists directories up to a reasonable depth to avoid
+        overwhelming the proxy or the system prompt.
+
+        Args:
+            path: Relative path to list (default: workspace root)
+            depth: Current recursion depth
+
+        Returns:
+            Tree dict compatible with _format_tree, or None on failure.
+        """
+        MAX_DEPTH = 3
+        entries = self.tool_system.filesystem.list_directory(path)
+
+        name = path if path == "." else path.rsplit("/", 1)[-1]
+        children = []
+
+        for entry in sorted(entries):
+            if entry.endswith("/"):
+                # Directory
+                dir_name = entry.rstrip("/")
+                child_path = f"{path}/{dir_name}" if path != "." else dir_name
+                if depth < MAX_DEPTH:
+                    try:
+                        subtree = self._build_remote_tree(child_path, depth + 1)
+                        if subtree:
+                            children.append(subtree)
+                            continue
+                    except Exception:
+                        pass
+                # Fallback: just show the directory name without children
+                children.append({"name": dir_name, "type": "directory", "children": []})
+            else:
+                children.append({"name": entry, "type": "file"})
+
+        return {"name": name, "type": "directory", "children": children}

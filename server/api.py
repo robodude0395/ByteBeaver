@@ -454,8 +454,15 @@ async def process_prompt_stream(request: PromptRequest):
         )
 
     def event_stream():
-        # Index workspace if needed
-        if context_engine and request.workspace_path not in indexed_workspaces:
+        # Index workspace if needed.
+        # Skip when using a remote file proxy — the workspace_path points to
+        # the client's machine and doesn't exist locally on the server, so
+        # indexing the server's filesystem would be meaningless.
+        if (
+            context_engine
+            and not request.file_proxy_url
+            and request.workspace_path not in indexed_workspaces
+        ):
             try:
                 file_patterns = None
                 exclude_patterns = None
