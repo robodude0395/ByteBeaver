@@ -16,7 +16,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri;
     private readonly agentClient: AgentClient;
     private onPendingChangesCallback?: (sessionId: string, changes: FileChangeInfo[]) => void;
-    private currentIntent?: string;
     private hasStreamedTokens = false;
 
     constructor(extensionUri: vscode.Uri, agentClient: AgentClient) {
@@ -70,7 +69,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 
                 // Start a streaming agent message for real-time token display
                 this.postMessageToWebview({ type: 'startStreamingMessage' });
-                this.currentIntent = undefined;
                 this.hasStreamedTokens = false;
 
                 await this.agentClient.sendPromptStreaming(
@@ -80,9 +78,6 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                         switch (evt.event) {
                             case 'session':
                                 this.sessionId = evt.data.session_id;
-                                break;
-                            case 'intent':
-                                this.currentIntent = evt.data.intent;
                                 break;
                             case 'thinking':
                                 // Agent is calling a tool — show it
