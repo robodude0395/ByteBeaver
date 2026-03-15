@@ -188,13 +188,23 @@ class FilesystemTools:
         if not os.path.isdir(abs_path):
             raise ValueError(f"Path is not a directory: {path}")
 
-        # List directory contents
+        # List directory contents with type indicators
         entries = os.listdir(abs_path)
 
         # Exclude hidden files by default
         entries = [e for e in entries if not e.startswith('.')]
 
-        return sorted(entries)
+        # Add trailing slash to directories so the LLM can distinguish
+        # files from folders without extra tool calls
+        result = []
+        for entry in sorted(entries):
+            entry_path = os.path.join(abs_path, entry)
+            if os.path.isdir(entry_path):
+                result.append(entry + "/")
+            else:
+                result.append(entry)
+
+        return result
 
     def search_files(self, query: str) -> List[str]:
         """

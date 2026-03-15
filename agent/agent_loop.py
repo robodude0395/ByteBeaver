@@ -59,6 +59,7 @@ read_file(path: str) → str
 
 list_directory(path: str) → list
   List files and subdirectories. Use "." for workspace root.
+  Directories have a trailing "/" (e.g., "src/"), files do not (e.g., "main.py").
 
 search_files(query: str) → list
   Search for files matching a glob pattern (e.g., "**/*.py").
@@ -283,6 +284,7 @@ class AgentLoop:
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
+        last_tool_call: Optional[Tuple[str, str]] = None  # (name, args_json)
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop round %d", round_num + 1)
@@ -314,6 +316,22 @@ class AgentLoop:
             tool_name, arguments = action
             logger.info("Executing tool: %s(%s)", tool_name, json.dumps(arguments)[:200])
 
+            # Detect duplicate consecutive tool calls (same tool + same args)
+            current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
+            if current_call_key == last_tool_call:
+                logger.warning("Duplicate tool call detected: %s — forcing final answer", tool_name)
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You already called this exact tool with the same arguments. "
+                        "Do NOT call it again. Summarise what you know so far and "
+                        "give your final answer to the user now."
+                    ),
+                })
+                continue
+            last_tool_call = current_call_key
+
             result = _execute_tool(
                 tool_name, arguments,
                 self.tool_system, self.context_engine, self.workspace_path,
@@ -334,7 +352,12 @@ class AgentLoop:
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
-                "content": f"OBSERVATION:\n{result}\n\nContinue. Use more tools if needed, or give your final answer.",
+                "content": (
+                    f"OBSERVATION:\n{result}\n\n"
+                    f"Above is the result of {tool_name}. "
+                    f"Use more tools if needed to answer the user's request, "
+                    f"or give your final answer. Do NOT repeat a tool call you already made."
+                ),
             })
 
         # Hit max rounds — return whatever we have
@@ -370,6 +393,7 @@ class AgentLoop:
         messages = self._build_messages(message, conversation_history)
         tool_calls_made: List[ToolCall] = []
         all_file_changes: List[FileChange] = []
+        last_tool_call: Optional[Tuple[str, str]] = None  # (name, args_json)
 
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop (streaming) round %d", round_num + 1)
@@ -412,6 +436,23 @@ class AgentLoop:
 
             # Tool call round
             tool_name, arguments = action
+
+            # Detect duplicate consecutive tool calls
+            current_call_key = (tool_name, json.dumps(arguments, sort_keys=True))
+            if current_call_key == last_tool_call:
+                logger.warning("Duplicate tool call detected (streaming): %s — forcing final answer", tool_name)
+                messages.append({"role": "assistant", "content": response})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You already called this exact tool with the same arguments. "
+                        "Do NOT call it again. Summarise what you know so far and "
+                        "give your final answer to the user now."
+                    ),
+                })
+                continue
+            last_tool_call = current_call_key
+
             yield {"event": "thinking", "data": f"Using tool: {tool_name}"}
 
             result = _execute_tool(
@@ -431,7 +472,12 @@ class AgentLoop:
             messages.append({"role": "assistant", "content": response})
             messages.append({
                 "role": "user",
-                "content": f"OBSERVATION:\n{result}\n\nContinue. Use more tools if needed, or give your final answer.",
+                "content": (
+                    f"OBSERVATION:\n{result}\n\n"
+                    f"Above is the result of {tool_name}. "
+                    f"Use more tools if needed to answer the user's request, "
+                    f"or give your final answer. Do NOT repeat a tool call you already made."
+                ),
             })
 
         # Max rounds

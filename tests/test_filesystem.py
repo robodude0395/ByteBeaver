@@ -133,7 +133,7 @@ class TestDirectoryOperations:
         entries = fs_tools.list_directory()
         assert "file1.txt" in entries
         assert "file2.txt" in entries
-        assert "subdir" in entries
+        assert "subdir/" in entries
 
     def test_list_directory_excludes_hidden_files(self, fs_tools, temp_workspace):
         """Test that hidden files are excluded."""
