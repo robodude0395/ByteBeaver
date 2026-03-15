@@ -107,23 +107,77 @@ export class AgentClient {
 
     /**
      * Get the client machine's IP address that the remote server can reach.
-     * Falls back to localhost if detection fails.
+     *
+     * Strategy: figure out which network the agent server lives on by
+     * looking at the configured baseURL, then pick a local interface on
+     * the same subnet.  This handles Tailscale (100.x.x.x) vs regular
+     * LAN (192.168.x.x) automatically.
+     *
+     * Falls back to the first non-internal IPv4 address, then localhost.
      */
     private getClientIp(): string {
         try {
             const os = require('os');
             const interfaces = os.networkInterfaces();
+
+            // Collect all non-internal IPv4 addresses
+            const candidates: { name: string; address: string }[] = [];
             for (const name of Object.keys(interfaces)) {
                 for (const iface of interfaces[name] ?? []) {
                     if (iface.family === 'IPv4' && !iface.internal) {
-                        return iface.address;
+                        candidates.push({ name, address: iface.address });
                     }
                 }
             }
+
+            if (candidates.length === 0) {
+                return 'localhost';
+            }
+
+            // Extract the server IP from the configured baseURL
+            const serverHost = this.getServerHost();
+
+            if (serverHost) {
+                // If the server is on Tailscale (100.64.0.0/10 CGNAT range),
+                // prefer a local Tailscale address
+                if (serverHost.startsWith('100.')) {
+                    const tailscale = candidates.find(c => c.address.startsWith('100.'));
+                    if (tailscale) {
+                        return tailscale.address;
+                    }
+                }
+
+                // Otherwise, try to match the same subnet prefix (first two octets)
+                const serverPrefix = serverHost.split('.').slice(0, 2).join('.');
+                const sameSubnet = candidates.find(c =>
+                    c.address.startsWith(serverPrefix + '.')
+                );
+                if (sameSubnet) {
+                    return sameSubnet.address;
+                }
+            }
+
+            // Fallback: first candidate
+            return candidates[0].address;
         } catch {
             // fall through
         }
         return 'localhost';
+    }
+
+    /**
+     * Extract the host/IP from the configured agent server base URL.
+     * Returns null if parsing fails.
+     */
+    private getServerHost(): string | null {
+        try {
+            const baseUrl = this.client.defaults.baseURL;
+            if (!baseUrl) { return null; }
+            const url = new URL(baseUrl);
+            return url.hostname;
+        } catch {
+            return null;
+        }
     }
 
     async sendPrompt(
