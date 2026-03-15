@@ -57,6 +57,40 @@ export function activate(context: vscode.ExtensionContext): void {
     const commandDisposables = registerCommands(chatPanel);
     context.subscriptions.push(...commandDisposables);
 
+    // Export conversation for debugging
+    context.subscriptions.push(
+        vscode.commands.registerCommand(
+            'local-agent.exportConversation',
+            async () => {
+                const content = chatPanel.exportConversation();
+                const action = await vscode.window.showQuickPick(
+                    ['Copy to clipboard', 'Save to file'],
+                    { placeHolder: 'Export conversation' }
+                );
+                if (action === 'Copy to clipboard') {
+                    await vscode.env.clipboard.writeText(content);
+                    void vscode.window.showInformationMessage(
+                        'Conversation copied to clipboard.'
+                    );
+                } else if (action === 'Save to file') {
+                    const uri = await vscode.window.showSaveDialog({
+                        defaultUri: vscode.Uri.file('agent-chat-export.txt'),
+                        filters: { 'Text files': ['txt', 'md'] },
+                    });
+                    if (uri) {
+                        await vscode.workspace.fs.writeFile(
+                            uri,
+                            Buffer.from(content, 'utf-8')
+                        );
+                        void vscode.window.showInformationMessage(
+                            `Conversation saved to ${uri.fsPath}`
+                        );
+                    }
+                }
+            }
+        )
+    );
+
     // Register cancelSession command
     context.subscriptions.push(
         vscode.commands.registerCommand(

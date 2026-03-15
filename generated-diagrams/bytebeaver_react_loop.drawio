@@ -1,0 +1,102 @@
+<mxfile host="app.diagrams.net" modified="2026-03-15" agent="ByteBeaver" version="21.0.0">
+  <diagram id="react-loop" name="ReAct Agent Loop">
+    <mxGraphModel dx="1100" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Start -->
+        <mxCell id="start" value="User Message" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="60" width="160" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Build Messages -->
+        <mxCell id="build-msgs" value="Build Messages&#xa;system prompt +&#xa;conversation history +&#xa;user message" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="180" width="200" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- LLM Call -->
+        <mxCell id="llm-call" value="LLM Completion&#xa;(Qwen2.5-Coder)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="180" width="200" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Decision: ACTION block? -->
+        <mxCell id="decision" value="Contains&#xa;ACTION block?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="340" width="160" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- Execute Tool -->
+        <mxCell id="exec-tool" value="Execute Tool&#xa;_execute_tool()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="700" y="340" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Append Observation -->
+        <mxCell id="append-obs" value="Append to messages:&#xa;assistant response +&#xa;OBSERVATION: result" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;" vertex="1" parent="1">
+          <mxGeometry x="700" y="180" width="200" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Parse File Changes -->
+        <mxCell id="parse-changes" value="Parse WRITE_FILE /&#xa;PATCH_FILE directives" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;" vertex="1" parent="1">
+          <mxGeometry x="380" y="520" width="200" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Return Response -->
+        <mxCell id="return" value="Return Response&#xa;+ File Changes&#xa;+ Tool Call Log" style="ellipse;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="390" y="640" width="180" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Max Rounds Guard -->
+        <mxCell id="max-rounds" value="Max 10 rounds&#xa;guard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=11;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="720" y="460" width="140" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e-start-build" style="rounded=1;strokeColor=#333;" edge="1" source="start" target="build-msgs" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-build-llm" style="rounded=1;strokeColor=#333;" edge="1" source="build-msgs" target="llm-call" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-llm-decision" style="rounded=1;strokeColor=#333;" edge="1" source="llm-call" target="decision" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-decision-yes" style="rounded=1;strokeColor=#E65100;" edge="1" source="decision" target="exec-tool" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-decision-yes-label" value="Yes" style="edgeLabel;html=1;fontSize=12;fontStyle=1;fontColor=#E65100;" vertex="1" connectable="0" parent="e-decision-yes">
+          <mxGeometry x="-0.3" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e-decision-no" style="rounded=1;strokeColor=#43A047;" edge="1" source="decision" target="parse-changes" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-decision-no-label" value="No (final answer)" style="edgeLabel;html=1;fontSize=12;fontStyle=1;fontColor=#43A047;" vertex="1" connectable="0" parent="e-decision-no">
+          <mxGeometry x="-0.3" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e-exec-append" style="rounded=1;strokeColor=#E65100;" edge="1" source="exec-tool" target="append-obs" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-append-llm" style="rounded=1;strokeColor=#E65100;dashed=1;" edge="1" source="append-obs" target="llm-call" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-loop-label" value="loop back" style="edgeLabel;html=1;fontSize=11;fontStyle=2;" vertex="1" connectable="0" parent="e-append-llm">
+          <mxGeometry x="-0.3" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e-parse-return" style="rounded=1;strokeColor=#333;" edge="1" source="parse-changes" target="return" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e-max-rounds" style="rounded=1;strokeColor=#C62828;dashed=1;" edge="1" source="max-rounds" target="return" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

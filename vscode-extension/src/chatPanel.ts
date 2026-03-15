@@ -17,6 +17,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly agentClient: AgentClient;
     private onPendingChangesCallback?: (sessionId: string, changes: FileChangeInfo[]) => void;
     private hasStreamedTokens = false;
+    private messageLog: Array<{ role: string; content: string; timestamp: string }> = [];
 
     constructor(extensionUri: vscode.Uri, agentClient: AgentClient) {
         this.extensionUri = extensionUri;
@@ -70,6 +71,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                 // Start a streaming agent message for real-time token display
                 this.postMessageToWebview({ type: 'startStreamingMessage' });
                 this.hasStreamedTokens = false;
+                let streamedResponse = '';
 
                 await this.agentClient.sendPromptStreaming(
                     text,
@@ -86,6 +88,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                     type: 'streamToken',
                                     token: `\n🔧 ${evt.data.message}\n`,
                                 });
+                                streamedResponse += `\n🔧 ${evt.data.message}\n`;
                                 this.hasStreamedTokens = true;
                                 break;
                             case 'tool_result':
@@ -97,6 +100,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                     type: 'streamToken',
                                     token: evt.data.token,
                                 });
+                                streamedResponse += evt.data.token;
                                 this.hasStreamedTokens = true;
                                 break;
                             case 'file_change':
@@ -110,6 +114,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                     type: 'streamToken',
                                     token: evt.data,
                                 });
+                                streamedResponse += evt.data;
                                 this.hasStreamedTokens = true;
                                 break;
                             case 'task_result':
@@ -122,9 +127,14 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                 break;
                             case 'done':
                                 this.postMessageToWebview({ type: 'endStreamingMessage' });
-                                // Only show "Task execution completed" if we didn't
-                                // already stream the response via chat_token events
-                                if (!this.hasStreamedTokens) {
+                                if (this.hasStreamedTokens) {
+                                    // Log the streamed response without re-rendering
+                                    this.messageLog.push({
+                                        role: 'agent',
+                                        content: streamedResponse,
+                                        timestamp: new Date().toISOString(),
+                                    });
+                                } else {
                                     this.addMessage('agent', 'Task execution completed.');
                                 }
                                 this.hasStreamedTokens = false;
@@ -162,6 +172,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         role: 'user' | 'agent' | 'system',
         content: string
     ): void {
+        this.messageLog.push({
+            role,
+            content,
+            timestamp: new Date().toISOString(),
+        });
         this.postMessageToWebview({
             type: 'addMessage',
             role,
@@ -229,6 +244,21 @@ export class ChatPanel implements vscode.WebviewViewProvider {
             clearInterval(this.pollingInterval);
             this.pollingInterval = undefined;
         }
+    }
+
+    /**
+     * Export the full conversation log as a formatted string.
+     * Each message includes timestamp, role, and content.
+     */
+    public exportConversation(): string {
+        if (this.messageLog.length === 0) {
+            return '(no messages)';
+        }
+        const header = `# Agent Chat Export\n# Session: ${this.sessionId ?? 'unknown'}\n# Exported: ${new Date().toISOString()}\n`;
+        const body = this.messageLog
+            .map((m) => `[${m.timestamp}] ${m.role.toUpperCase()}:\n${m.content}`)
+            .join('\n\n---\n\n');
+        return header + '\n' + body + '\n';
     }
 
     private setTyping(typing: boolean): void {

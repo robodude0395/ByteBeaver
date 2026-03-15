@@ -374,8 +374,8 @@ class AgentLoop:
         for round_num in range(MAX_TOOL_ROUNDS):
             logger.info("Agent loop (streaming) round %d", round_num + 1)
 
-            # Non-streaming call for tool-use rounds, streaming for final answer
-            # We need to see the full response to check for ACTION blocks
+            # Use non-streaming call to get the full response so we can
+            # check for ACTION blocks before deciding what to do.
             response = self.llm_client.complete(
                 messages=messages,
                 temperature=0.3,
@@ -385,20 +385,17 @@ class AgentLoop:
             action = _parse_action(response)
 
             if action is None:
-                # Final answer — stream it token by token
-                # Re-do the call in streaming mode for the final response
-                full_response = ""
-                for token in self.llm_client.stream_complete(
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=2048,
-                ):
-                    if token is not None:
-                        full_response += token
-                        yield {"event": "token", "data": token}
+                # Final answer — no ACTION block found.
+                # Stream the already-obtained response token-by-token to the
+                # client so the UI feels responsive.  We do NOT re-call the
+                # LLM (the old code did a second stream_complete call which
+                # was non-deterministic and could produce different output).
+                chunk_size = 4  # characters per "token" event
+                for i in range(0, len(response), chunk_size):
+                    yield {"event": "token", "data": response[i:i + chunk_size]}
 
-                # Parse file changes from streamed response
-                file_changes = _parse_file_changes(full_response, self.workspace_path)
+                # Parse file changes from the response
+                file_changes = _parse_file_changes(response, self.workspace_path)
                 for fc in file_changes:
                     all_file_changes.append(fc)
                     yield {"event": "file_change", "data": fc}
@@ -406,7 +403,7 @@ class AgentLoop:
                 yield {
                     "event": "done",
                     "data": {
-                        "response": full_response,
+                        "response": response,
                         "file_changes": all_file_changes,
                         "tool_calls": tool_calls_made,
                     },

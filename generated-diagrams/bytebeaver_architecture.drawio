@@ -1,0 +1,106 @@
+<mxfile host="app.diagrams.net" modified="2026-03-15" agent="ByteBeaver" version="21.0.0">
+  <diagram id="arch-overview" name="High-Level Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- VSCode Extension cluster -->
+        <mxCell id="ext-group" value="VSCode Extension" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="260" height="320" as="geometry"/>
+        </mxCell>
+        <mxCell id="chat-input" value="Chat Input" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#388E3C;" vertex="1" parent="1">
+          <mxGeometry x="80" y="180" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="stream-display" value="Streaming Display" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#388E3C;" vertex="1" parent="1">
+          <mxGeometry x="80" y="250" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="diff-preview" value="Diff Preview&#xa;Apply / Reject" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#388E3C;" vertex="1" parent="1">
+          <mxGeometry x="80" y="320" width="160" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- API Server cluster -->
+        <mxCell id="api-group" value="FastAPI Server (api.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="420" y="120" width="260" height="320" as="geometry"/>
+        </mxCell>
+        <mxCell id="rest-endpoints" value="REST Endpoints&#xa;/agent/prompt&#xa;/agent/prompt/stream" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;" vertex="1" parent="1">
+          <mxGeometry x="450" y="180" width="200" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="session-mgmt" value="Session Management&#xa;(in-memory)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;" vertex="1" parent="1">
+          <mxGeometry x="450" y="270" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="sse-streaming" value="SSE Streaming&#xa;(StreamingResponse)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;" vertex="1" parent="1">
+          <mxGeometry x="450" y="340" width="200" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- Agent Loop -->
+        <mxCell id="agent-loop" value="Agent Loop&#xa;(ReAct Pattern)&#xa;agent_loop.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="200" width="200" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- LLM -->
+        <mxCell id="llm" value="Qwen2.5-Coder-7B&#xa;(llama.cpp / CUDA)&#xa;OpenAI-compatible API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="120" width="200" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Tool System -->
+        <mxCell id="tools-group" value="Tool System" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="250" width="280" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="tool-fs" value="read_file&#xa;list_directory&#xa;search_files" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#EF6C00;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="300" width="110" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="tool-term" value="run_command" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#EF6C00;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="300" width="110" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="tool-search" value="semantic_search" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#EF6C00;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="385" width="110" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- Context Engine -->
+        <mxCell id="context-engine" value="Context Engine&#xa;Qdrant + Embeddings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="375" width="130" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#333;" edge="1" source="chat-input" target="rest-endpoints" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1-label" value="HTTP POST" style="edgeLabel;html=1;fontSize=11;" vertex="1" connectable="0" parent="e1">
+          <mxGeometry x="-0.2" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#333;" edge="1" source="sse-streaming" target="stream-display" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2-label" value="SSE Events" style="edgeLabel;html=1;fontSize=11;" vertex="1" connectable="0" parent="e2">
+          <mxGeometry x="-0.2" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1565C0;" edge="1" source="rest-endpoints" target="agent-loop" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#F9A825;" edge="1" source="agent-loop" target="llm" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4-label" value="chat completions" style="edgeLabel;html=1;fontSize=11;" vertex="1" connectable="0" parent="e4">
+          <mxGeometry x="-0.2" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#E65100;" edge="1" source="agent-loop" target="tool-fs" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#E65100;" edge="1" source="agent-loop" target="tool-term" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#7B1FA2;dashed=1;" edge="1" source="tool-search" target="context-engine" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

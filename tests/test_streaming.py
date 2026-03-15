@@ -18,7 +18,6 @@ class TestStreamingEndpoint:
     def test_returns_event_stream_content_type(self, mock_llm, client):
         """The streaming endpoint returns text/event-stream."""
         mock_llm.complete.return_value = "Hello!"
-        mock_llm.stream_complete.return_value = iter(["hello"])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             response = client.post(
@@ -32,7 +31,6 @@ class TestStreamingEndpoint:
     def test_stream_contains_session_event(self, mock_llm, client):
         """The stream starts with a session event containing session_id."""
         mock_llm.complete.return_value = "Sure, I can help."
-        mock_llm.stream_complete.return_value = iter(["ok"])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             response = client.post(
@@ -46,11 +44,13 @@ class TestStreamingEndpoint:
 
     @patch("server.api.llm_client")
     def test_stream_contains_token_events(self, mock_llm, client):
-        """Chat token events are emitted for each LLM token."""
-        # Agent loop calls complete() first (no ACTION → final answer),
-        # then stream_complete() for the streamed final response
+        """Chat token events are emitted for the final LLM response.
+
+        The agent loop calls complete() once. If no ACTION block is found,
+        the response is chunked and emitted as chat_token events (no second
+        LLM call).
+        """
         mock_llm.complete.return_value = "Hello! How can I help?"
-        mock_llm.stream_complete.return_value = iter(["tok1", "tok2"])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             response = client.post(
@@ -59,13 +59,16 @@ class TestStreamingEndpoint:
             )
             events = self._parse_sse(response.text)
             token_events = [e for e in events if e["event"] == "chat_token"]
-            assert len(token_events) == 2
+            # 22 chars chunked at 4 chars each → 6 events
+            assert len(token_events) >= 1
+            # Reassembled tokens should equal the original response
+            full = "".join(e["data"]["token"] for e in token_events)
+            assert full == "Hello! How can I help?"
 
     @patch("server.api.llm_client")
     def test_stream_ends_with_done(self, mock_llm, client):
         """The stream ends with a done event."""
         mock_llm.complete.return_value = "All done."
-        mock_llm.stream_complete.return_value = iter(["ok"])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             response = client.post(

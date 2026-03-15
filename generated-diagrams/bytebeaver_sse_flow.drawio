@@ -1,0 +1,126 @@
+<mxfile host="app.diagrams.net" modified="2026-03-15" agent="ByteBeaver" version="21.0.0">
+  <diagram id="sse-flow" name="Client-Server SSE Flow">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- VSCode Extension -->
+        <mxCell id="ext-group" value="VSCode Extension" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="240" height="340" as="geometry"/>
+        </mxCell>
+        <mxCell id="chat-panel" value="ChatPanel&#xa;(chatPanel.ts)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#388E3C;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="140" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="msg-log" value="messageLog[]&#xa;(export feature)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#388E3C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="220" width="180" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="diff-view" value="Diff Preview&#xa;Apply / Reject" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#A5D6A7;strokeColor=#388E3C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="290" width="180" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- HTTP Request -->
+        <mxCell id="http-req" value="HTTP POST&#xa;/agent/prompt/stream" style="shape=mxgraph.arrows2.arrow;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=11;fontStyle=1;dy=0.6;dx=40;notch=0;" vertex="1" parent="1">
+          <mxGeometry x="320" y="120" width="220" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="http-body" value="Body:&#xa;{ prompt, workspace_path, session_id }" style="text;html=1;fontSize=10;fontColor=#666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="330" y="80" width="200" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- SSE Response -->
+        <mxCell id="sse-resp" value="SSE Stream&#xa;text/event-stream" style="shape=mxgraph.arrows2.arrow;whiteSpace=wrap;html=1;fillColor=#FFECB3;strokeColor=#FF8F00;fontSize=11;fontStyle=1;dy=0.6;dx=40;notch=0;direction=west;" vertex="1" parent="1">
+          <mxGeometry x="320" y="340" width="220" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- FastAPI Server -->
+        <mxCell id="server-group" value="FastAPI Server" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="580" y="80" width="220" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="endpoint" value="StreamingResponse&#xa;event_stream()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="600" y="130" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Agent Loop -->
+        <mxCell id="agent-group" value="Agent Loop" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=14;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;dashPattern=5 5;" vertex="1" parent="1">
+          <mxGeometry x="580" y="280" width="220" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="react-loop" value="run_streaming()&#xa;yields events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1565C0;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="320" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- SSE Event Types -->
+        <mxCell id="events-group" value="SSE Event Types (in order)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#9E9E9E;fontSize=13;fontStyle=1;verticalAlign=top;spacingTop=8;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="880" y="60" width="320" height="400" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="evt1" value="1. session&#xa;{session_id: &quot;uuid&quot;}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1F5FE;strokeColor=#0288D1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="100" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="evt2" value="2. thinking&#xa;{message: &quot;Using tool: read_file&quot;}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="155" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="evt3" value="3. tool_result&#xa;{result: &quot;file contents (truncated)&quot;}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="210" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="evt4" value="4. chat_token&#xa;{token: &quot;Here&quot;} {token: &quot;'s&quot;} {token: &quot; what&quot;} ..." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="265" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="evt5" value="5. file_change&#xa;{change_id, file_path, change_type, diff}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="320" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="evt6" value="6. done&#xa;{status: &quot;completed&quot;, session_id: &quot;uuid&quot;}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#7B1FA2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="375" width="260" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- Sequence arrows between events -->
+        <mxCell id="seq1" style="rounded=0;strokeColor=#BDBDBD;dashed=1;" edge="1" source="evt1" target="evt2" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="seq2" style="rounded=0;strokeColor=#BDBDBD;dashed=1;" edge="1" source="evt2" target="evt3" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="seq3" style="rounded=0;strokeColor=#BDBDBD;dashed=1;" edge="1" source="evt3" target="evt4" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="seq4" style="rounded=0;strokeColor=#BDBDBD;dashed=1;" edge="1" source="evt4" target="evt5" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="seq5" style="rounded=0;strokeColor=#BDBDBD;dashed=1;" edge="1" source="evt5" target="evt6" parent="1"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- Loop indicator between thinking and tool_result -->
+        <mxCell id="loop-indicator" value="repeats per&#xa;tool round" style="text;html=1;fontSize=10;fontColor=#E65100;fontStyle=2;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="170" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="loop-arrow" style="rounded=1;strokeColor=#E65100;dashed=1;curved=1;" edge="1" source="evt3" target="evt2" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1210" y="230"/>
+              <mxPoint x="1210" y="175"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Main flow edges -->
+        <mxCell id="e-chat-http" style="rounded=1;strokeColor=#333;" edge="1" source="chat-panel" target="http-req" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-http-endpoint" style="rounded=1;strokeColor=#333;" edge="1" source="http-req" target="endpoint" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-endpoint-react" style="rounded=1;strokeColor=#1565C0;" edge="1" source="endpoint" target="react-loop" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-react-events" style="rounded=1;strokeColor=#1565C0;" edge="1" source="react-loop" target="evt1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-sse-chat" style="rounded=1;strokeColor=#FF8F00;" edge="1" source="sse-resp" target="chat-panel" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-evt5-diff" style="rounded=1;strokeColor=#C62828;dashed=1;" edge="1" source="evt5" target="diff-view" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="870" y="500"/>
+              <mxPoint x="160" y="500"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-evt5-label" value="triggers diff preview" style="edgeLabel;html=1;fontSize=10;fontStyle=2;" vertex="1" connectable="0" parent="e-evt5-diff">
+          <mxGeometry x="-0.3" relative="1" as="geometry"><mxPoint as="offset"/></mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

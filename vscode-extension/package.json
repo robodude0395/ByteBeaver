@@ -46,6 +46,11 @@
         "command": "local-agent.cancelSession",
         "title": "Cancel Session",
         "category": "Agent"
+      },
+      {
+        "command": "local-agent.exportConversation",
+        "title": "Export Conversation",
+        "category": "Agent"
       }
     ],
     "viewsContainers": {
