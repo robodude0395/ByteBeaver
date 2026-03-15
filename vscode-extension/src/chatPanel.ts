@@ -17,6 +17,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     private readonly agentClient: AgentClient;
     private onPendingChangesCallback?: (sessionId: string, changes: FileChangeInfo[]) => void;
     private currentIntent?: string;
+    private hasStreamedTokens = false;
 
     constructor(extensionUri: vscode.Uri, agentClient: AgentClient) {
         this.extensionUri = extensionUri;
@@ -70,6 +71,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                 // Start a streaming agent message for real-time token display
                 this.postMessageToWebview({ type: 'startStreamingMessage' });
                 this.currentIntent = undefined;
+                this.hasStreamedTokens = false;
 
                 await this.agentClient.sendPromptStreaming(
                     text,
@@ -82,12 +84,27 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                             case 'intent':
                                 this.currentIntent = evt.data.intent;
                                 break;
+                            case 'thinking':
+                                // Agent is calling a tool — show it
+                                this.setTyping(false);
+                                this.postMessageToWebview({
+                                    type: 'streamToken',
+                                    token: `\n🔧 ${evt.data.message}\n`,
+                                });
+                                this.hasStreamedTokens = true;
+                                break;
+                            case 'tool_result':
+                                // Tool returned a result — show a brief summary
+                                break;
                             case 'chat_token':
                                 this.setTyping(false);
                                 this.postMessageToWebview({
                                     type: 'streamToken',
                                     token: evt.data.token,
                                 });
+                                this.hasStreamedTokens = true;
+                                break;
+                            case 'file_change':
                                 break;
                             case 'plan':
                                 this.setTyping(false);
@@ -98,6 +115,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                     type: 'streamToken',
                                     token: evt.data,
                                 });
+                                this.hasStreamedTokens = true;
                                 break;
                             case 'task_result':
                                 break;
@@ -109,16 +127,20 @@ export class ChatPanel implements vscode.WebviewViewProvider {
                                 break;
                             case 'done':
                                 this.postMessageToWebview({ type: 'endStreamingMessage' });
-                                if (this.currentIntent !== 'chat') {
+                                // Only show "Task execution completed" if we didn't
+                                // already stream the response via chat_token events
+                                if (!this.hasStreamedTokens) {
                                     this.addMessage('agent', 'Task execution completed.');
-                                    // Fetch final status to get pending changes
-                                    if (this.sessionId) {
-                                        this.startStatusPolling(this.sessionId);
-                                    }
+                                }
+                                this.hasStreamedTokens = false;
+                                // Fetch final status to get pending changes
+                                if (this.sessionId) {
+                                    this.startStatusPolling(this.sessionId);
                                 }
                                 break;
                             case 'error':
                                 this.postMessageToWebview({ type: 'endStreamingMessage' });
+                                this.hasStreamedTokens = false;
                                 this.addMessage(
                                     'system',
                                     `Error: ${evt.data.error ?? evt.data}`
