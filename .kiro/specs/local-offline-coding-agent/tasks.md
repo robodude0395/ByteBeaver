@@ -810,7 +810,7 @@ The system uses Python (FastAPI) for the agent server and TypeScript for the VSC
     - Update vector database incrementally
     - _Requirements: 7.1, 15.4_
 
-  - [~]* 40.4 Write performance benchmarks
+  - [ ]* 40.4 Write performance benchmarks
     - Benchmark LLM inference speed (tokens/sec)
     - Benchmark indexing time for 1000-file repository
     - Benchmark search query latency
