@@ -114,6 +114,17 @@ ACTION: write_file
 
 This writes the file directly to the workspace. Do NOT just show code in chat — use write_file to actually create it.
 
+### IMPORTANT: Multi-line file contents
+
+For files with multiple lines, use \\n for newlines inside the JSON string. Example:
+
+ACTION: write_file
+```json
+{"path": "hello.py", "contents": "#!/usr/bin/env python3\\nimport sys\\n\\ndef main():\\n    print('Hello, World!')\\n\\nif __name__ == '__main__':\\n    main()\\n"}
+```
+
+Do NOT use triple quotes (\"\"\"...\"\"\") inside JSON — that is invalid. Always use \\n for newlines.
+
 For reviewing changes before applying (optional), you can also use these directives:
 
 WRITE_FILE: path/to/file.py
@@ -267,8 +278,19 @@ def _parse_action(response: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     try:
         arguments = json.loads(args_str)
     except json.JSONDecodeError:
-        logger.warning("Failed to parse ACTION arguments: %s", args_str[:200])
-        return None
+        # The Qwen model sometimes wraps multi-line strings in Python
+        # triple-quotes (""" ... """) inside JSON, which is invalid.
+        # Try to salvage by converting triple-quoted values to escaped strings.
+        fixed = args_str
+        triple_pat = re.compile(r'"""(.*?)"""', re.DOTALL)
+        for m in triple_pat.finditer(fixed):
+            escaped = m.group(1).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+            fixed = fixed.replace(m.group(0), f'"{escaped}"')
+        try:
+            arguments = json.loads(fixed)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse ACTION arguments: %s", args_str[:200])
+            return None
 
     return tool_name, arguments
 
