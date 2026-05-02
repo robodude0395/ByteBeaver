@@ -4,9 +4,9 @@
 set -e
 
 # Configuration
-MODEL_PATH="${MODEL_PATH:-models/qwen2.5-coder-7b-instruct-q4_k_m.gguf}"
+MODEL_PATH="${MODEL_PATH:-models/qwen2.5-coder-14b-instruct-q4_k_m.gguf}"
 CONTEXT_SIZE="${CONTEXT_SIZE:-8192}"
-GPU_LAYERS="${GPU_LAYERS:-35}"
+GPU_LAYERS="${GPU_LAYERS:-48}"
 PORT="${PORT:-8001}"
 HOST="${HOST:-0.0.0.0}"
 THREADS="${THREADS:-6}"
@@ -20,7 +20,7 @@ if [ ! -f "$MODEL_PATH" ]; then
     echo "Please download the model first:"
     echo "  mkdir -p models"
     echo "  cd models"
-    echo "  wget https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    echo "  wget https://huggingface.co/Qwen/Qwen2.5-Coder-14B-Instruct-GGUF/resolve/main/qwen2.5-coder-14b-instruct-q4_k_m.gguf"
     exit 1
 fi
 

@@ -14,6 +14,8 @@ class LLMConfig:
     max_tokens: int
     temperature: float
     context_window: int
+    provider: str = "openai_compatible"
+    api_key: str = ""
 
 
 @dataclass
@@ -197,6 +199,12 @@ class Config:
             data['llm']['base_url'] = os.environ['AGENT_LLM_BASE_URL']
         if 'AGENT_LLM_MODEL' in os.environ:
             data['llm']['model'] = os.environ['AGENT_LLM_MODEL']
+        if 'AGENT_LLM_PROVIDER' in os.environ:
+            data['llm']['provider'] = os.environ['AGENT_LLM_PROVIDER']
+        if 'AGENT_LLM_API_KEY' in os.environ:
+            data['llm']['api_key'] = os.environ['AGENT_LLM_API_KEY']
+        if 'AGENT_LLM_CONTEXT_WINDOW' in os.environ:
+            data['llm']['context_window'] = int(os.environ['AGENT_LLM_CONTEXT_WINDOW'])
 
         # Agent overrides
         if 'AGENT_HOST' in os.environ:

@@ -18,11 +18,17 @@ The system uses a unified ReAct (Reasoning + Acting) agent loop:
 3. Context Engine — indexes the workspace into a vector DB (Qdrant) using
    sentence-transformers embeddings, then provides semantic search so the LLM
    receives relevant code snippets in its prompt
+4. Model Provider — abstraction layer that supports multiple LLM backends
+   (llama.cpp, Anthropic, Ollama) with config-driven model selection
+5. Session Store — SQLite-backed persistent sessions with conversation
+   summarization for long-running interactions
 
 Supporting subsystems:
 - SSE Streaming — tokens stream to the client in real time via Server-Sent Events
 - Review-before-apply — proposed file changes are returned as diffs; the client
   (VSCode extension) presents them for approval before writing to disk
+- Dynamic Context Budget — allocates the context window dynamically based on
+  what the current task needs, scaling with the model's context window size
 
 ## VSCode Extension
 
@@ -32,29 +38,33 @@ proposed changes. Configurable server URL for remote-desktop setups.
 
 ## Current State
 
-The agent uses a unified ReAct (Reasoning + Acting) loop where the LLM sees
-available tools and decides whether to call them or respond conversationally.
-There is no upfront intent classification — the model handles everything in a
-single code path. Core infrastructure is functional: the agent loop, tool
-invocation, context-aware prompts, SSE streaming, and the VSCode extension.
-The agent can receive a coding request or a conversational question, use tools
-to explore the workspace, generate file changes, and present them for review.
+The agent uses a unified ReAct loop with persistent memory, model abstraction,
+and smart context management. Sessions survive server restarts and tab switches.
+Conversation history is summarized when it grows long, preserving key context
+without consuming the full token budget. The model provider layer allows swapping
+between llama.cpp (Qwen, DeepSeek, Llama), Anthropic Claude, and Ollama models
+via config changes.
 
-## Phase 7 — Conversational UX (current)
+## Phase 8 — Persistent Memory, Model Abstraction, Smarter Context (current)
 
-Phase 7 replaced the old planner→executor pipeline and keyword-based intent
-classifier with the unified agent loop. Completed so far:
+Phase 8 addressed the core limitations that prevented the agent from handling
+complex multi-turn tasks:
 
-- Unified agent loop (`agent/agent_loop.py`): single ReAct-style loop with
-  tool descriptions in the system prompt — LLM decides actions autonomously
-- Tool-driven intelligence: read_file, list_directory, search_files,
-  run_command, semantic_search available as ACTION blocks
-- Personality and tone: system prompt shapes the agent as a concise, friendly
-  senior dev
-- Context awareness: semantic search integrated into the loop
-- Conversation memory: rolling 20-message history per session
+- Persistent sessions (`agent/session_store.py`): SQLite-backed storage so
+  sessions survive server restarts and tab switches
+- Conversation summarization (`agent/summarizer.py`): LLM compresses older
+  messages into concise summaries, preserving context without token bloat
+- Dynamic context budget (`agent/context_budget.py`): allocates tokens between
+  system prompt, history, tool results, and generation based on context window
+- Model provider abstraction (`llm/provider.py`): swap between llama.cpp,
+  Anthropic, Ollama without touching the agent loop
+- Smarter tool result compression: tool-aware compression (e.g., successful
+  write_file doesn't echo content back)
+- Planning-before-coding: system prompt guides the LLM to plan complex tasks
+  before writing code, producing better multi-file output
 
 Remaining work:
-- Improve multi-turn context quality (summarisation, selective history)
-- Tune system prompt for the Qwen model's strengths and quirks
+- Tune system prompt per model (Qwen vs Claude vs Llama have different strengths)
 - Add follow-up suggestions and proactive tool use
+- Session management UI in the VSCode extension (list/resume sessions)
+- Explore larger context windows (32K+) with the 14B model

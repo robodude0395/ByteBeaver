@@ -24,7 +24,10 @@ from agent.models import (
     Task, Plan, ExecutionResult, TaskComplexity, TaskStatus
 )
 from agent.agent_loop import AgentLoop
+from agent.session_store import SessionStore
+from agent.summarizer import summarize_history, build_history_with_summary
 from llm.client import LLMClient
+from llm.provider import ModelProvider, create_provider
 from tools.base import ToolSystem
 from context.indexer import ContextEngine
 from config import Config
@@ -44,13 +47,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session storage
+# In-memory session cache (backed by SessionStore for persistence)
 sessions: Dict[str, AgentSession] = {}
 
 # Global instances (will be initialized on startup)
-llm_client: Optional[LLMClient] = None
+llm_client: Optional[ModelProvider] = None
 context_engine: Optional[ContextEngine] = None
 config: Optional[Config] = None
+session_store: Optional[SessionStore] = None
 
 # Track indexed workspaces to avoid re-indexing
 indexed_workspaces: set = set()
@@ -58,8 +62,8 @@ indexed_workspaces: set = set()
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize logging, LLM client and context engine on startup."""
-    global llm_client, context_engine, config
+    """Initialize logging, LLM client, context engine, and session store on startup."""
+    global llm_client, context_engine, config, session_store
 
     # Load configuration
     config_path = os.environ.get("AGENT_CONFIG_PATH", "config.yaml")
@@ -87,27 +91,42 @@ async def startup_event():
     else:
         setup_logging()
 
-    # Initialize LLM client
+    # Initialize LLM provider
     if config:
+        llm_provider_type = config.llm.provider
         llm_base_url = config.llm.base_url
         llm_model = config.llm.model
         llm_max_tokens = config.llm.max_tokens
+        llm_context_window = config.llm.context_window
+        llm_api_key = config.llm.api_key
     else:
         # Fallback to hardcoded defaults
+        llm_provider_type = os.environ.get("AGENT_LLM_PROVIDER", "openai_compatible")
         llm_base_url = os.environ.get("AGENT_LLM_BASE_URL", "http://localhost:8001/v1")
         llm_model = "qwen2.5-coder-7b-instruct"
         llm_max_tokens = 2048
+        llm_context_window = 8192
+        llm_api_key = os.environ.get("AGENT_LLM_API_KEY", "")
 
     try:
-        llm_client = LLMClient(
-            base_url=llm_base_url,
-            model=llm_model,
-            max_tokens=llm_max_tokens
+        provider_kwargs = {
+            "base_url": llm_base_url,
+            "model": llm_model,
+            "max_tokens": llm_max_tokens,
+            "context_window": llm_context_window,
+        }
+        if llm_api_key:
+            provider_kwargs["api_key"] = llm_api_key
+
+        llm_client = create_provider(llm_provider_type, **provider_kwargs)
+        model_info = llm_client.get_model_info()
+        logger.info(
+            "Initialized LLM provider: %s (%s) at %s, context=%d",
+            model_info.provider, model_info.name, llm_base_url, model_info.context_window,
         )
-        logger.info(f"Initialized LLM client: {llm_base_url}")
     except Exception as e:
-        logger.error(f"Failed to initialize LLM client: {e}")
-        # Continue without LLM client - will fail on first request
+        logger.error(f"Failed to initialize LLM provider: {e}")
+        # Continue without LLM — will fail on first request
 
     # Initialize ContextEngine if config is available
     if config:
@@ -128,6 +147,15 @@ async def startup_event():
     else:
         logger.info("ContextEngine not initialized (no config file)")
         context_engine = None
+
+    # Initialize persistent session store
+    db_path = os.environ.get("AGENT_SESSION_DB", "data/sessions.db")
+    try:
+        session_store = SessionStore(db_path=db_path)
+        logger.info("Initialized SessionStore at %s", db_path)
+    except Exception as e:
+        logger.error("Failed to initialize SessionStore: %s", e)
+        session_store = None
 
 
 # Request/Response models
@@ -235,15 +263,111 @@ class NotifyAppliedRequest(BaseModel):
 
 
 
+def _get_or_create_session(
+    session_id: Optional[str], workspace_path: str
+) -> AgentSession:
+    """Load a session from cache/store, or create a new one.
+
+    Checks in-memory cache first, then persistent store, then creates new.
+    """
+    # 1. In-memory cache
+    if session_id and session_id in sessions:
+        session = sessions[session_id]
+        session.updated_at = datetime.now()
+        return session
+
+    # 2. Persistent store
+    if session_id and session_store:
+        session = session_store.get_session(session_id)
+        if session:
+            session.updated_at = datetime.now()
+            sessions[session_id] = session  # cache it
+            return session
+
+    # 3. Create new
+    new_id = session_id or str(uuid.uuid4())
+    session = AgentSession(
+        session_id=new_id,
+        workspace_path=workspace_path,
+        status=SessionStatus.PLANNING,
+    )
+    sessions[new_id] = session
+    if session_store:
+        session_store.save_session(session)
+    return session
+
+
+def _persist_session(session: AgentSession) -> None:
+    """Save session state and history to the persistent store."""
+    if not session_store:
+        return
+    try:
+        session_store.save_session(session)
+    except Exception as e:
+        logger.error("Failed to persist session %s: %s", session.session_id, e)
+
+
+def _persist_messages(
+    session_id: str, user_msg: str, assistant_msg: str
+) -> None:
+    """Persist user and assistant messages to the store."""
+    if not session_store:
+        return
+    try:
+        session_store.add_message(session_id, "user", user_msg)
+        session_store.add_message(session_id, "assistant", assistant_msg)
+    except Exception as e:
+        logger.error("Failed to persist messages for %s: %s", session_id, e)
+
+
+def _get_effective_history(session: AgentSession) -> List[Dict[str, str]]:
+    """Build the conversation history to send to the agent loop.
+
+    Uses summarization when history is long, falling back to a simple
+    recent-messages window when the LLM is unavailable for summarization.
+    """
+    history = session.conversation_history
+    if not history:
+        return []
+
+    if not llm_client or not session_store:
+        # No LLM or store — just use recent messages
+        if len(history) > 20:
+            return history[-20:]
+        return list(history)
+
+    # Try to summarize if history is getting long
+    existing_summary = session_store.get_latest_summary(session.session_id)
+
+    try:
+        new_summary = summarize_history(
+            llm_client, history, existing_summary
+        )
+        if new_summary and new_summary != existing_summary:
+            session_store.save_summary(
+                session.session_id, new_summary, len(history)
+            )
+            existing_summary = new_summary
+    except Exception as e:
+        logger.warning("Summarization failed for %s: %s", session.session_id, e)
+
+    return build_history_with_summary(history, existing_summary)
+
+
 def _check_llm_health() -> Dict[str, Any]:
     """Check LLM server connectivity."""
     if llm_client is None:
-        return {"status": "unavailable", "message": "LLM client not initialised"}
+        return {"status": "unavailable", "message": "LLM provider not initialised"}
     try:
-        url = f"{llm_client.base_url}/models"
-        resp = requests.get(url, timeout=5)
-        resp.raise_for_status()
-        return {"status": "healthy"}
+        model_info = llm_client.get_model_info()
+        # For OpenAI-compatible providers, check the /models endpoint
+        if model_info.provider in ("openai_compatible", "llamacpp", "vllm"):
+            from llm.provider import OpenAICompatibleProvider
+            if isinstance(llm_client, OpenAICompatibleProvider):
+                url = f"{llm_client.base_url}/models"
+                resp = requests.get(url, timeout=5)
+                resp.raise_for_status()
+        return {"status": "healthy", "model": model_info.name, "provider": model_info.provider}
     except Exception as e:
         return {"status": "unhealthy", "message": str(e)}
 
@@ -360,17 +484,7 @@ async def process_prompt(request: PromptRequest):
             logger.error(f"Failed to index workspace: {e}", exc_info=True)
 
     # Create or get session
-    if request.session_id and request.session_id in sessions:
-        session = sessions[request.session_id]
-        session.updated_at = datetime.now()
-    else:
-        session_id = request.session_id or str(uuid.uuid4())
-        session = AgentSession(
-            session_id=session_id,
-            workspace_path=request.workspace_path,
-            status=SessionStatus.PLANNING
-        )
-        sessions[session_id] = session
+    session = _get_or_create_session(request.session_id, request.workspace_path)
 
     try:
         # --- Unified Agent Loop (ReAct pattern) ---
@@ -392,14 +506,18 @@ async def process_prompt(request: PromptRequest):
             context_window=ctx_window,
         )
 
+        # Build effective history with summarization
+        effective_history = _get_effective_history(session)
+
         result = agent.run(
             message=request.prompt,
-            conversation_history=session.conversation_history,
+            conversation_history=effective_history,
         )
 
-        # Store messages in session history
+        # Store messages in session history (in-memory + persistent)
         session.add_message("user", request.prompt)
         session.add_message("assistant", result["response"])
+        _persist_messages(session.session_id, request.prompt, result["response"])
 
         # Store file changes in execution_result so status/apply endpoints work
         file_changes = result.get("file_changes", [])
@@ -411,9 +529,12 @@ async def process_prompt(request: PromptRequest):
                 failed_tasks=[],
                 all_changes=file_changes,
             )
+            if session_store:
+                session_store.save_file_changes(session.session_id, file_changes)
 
         session.status = SessionStatus.COMPLETED
         session.updated_at = datetime.now()
+        _persist_session(session)
 
         return PromptResponse(
             session_id=session.session_id,
@@ -427,6 +548,7 @@ async def process_prompt(request: PromptRequest):
         session.status = SessionStatus.ERROR
         session.error = str(e)
         session.updated_at = datetime.now()
+        _persist_session(session)
 
         raise HTTPException(
             status_code=500,
@@ -486,17 +608,8 @@ async def process_prompt_stream(request: PromptRequest):
                 logger.error(f"Failed to index workspace: {e}", exc_info=True)
 
         # Create or get session
-        session_id = request.session_id or str(uuid.uuid4())
-        if session_id in sessions:
-            session = sessions[session_id]
-            session.updated_at = datetime.now()
-        else:
-            session = AgentSession(
-                session_id=session_id,
-                workspace_path=request.workspace_path,
-                status=SessionStatus.PLANNING
-            )
-            sessions[session_id] = session
+        session = _get_or_create_session(request.session_id, request.workspace_path)
+        session_id = session.session_id
 
         yield f"event: session\ndata: {json.dumps({'session_id': session_id})}\n\n"
 
@@ -528,11 +641,14 @@ async def process_prompt_stream(request: PromptRequest):
                 context_window=ctx_window,
             )
 
+            # Build effective history with summarization
+            effective_history = _get_effective_history(session)
+
             full_response = ""
 
             for event in agent.run_streaming(
                 message=request.prompt,
-                conversation_history=session.conversation_history,
+                conversation_history=effective_history,
             ):
                 if event["event"] == "thinking":
                     yield f"event: thinking\ndata: {json.dumps({'message': event['data']})}\n\n"
@@ -550,8 +666,10 @@ async def process_prompt_stream(request: PromptRequest):
 
             session.add_message("user", request.prompt)
             session.add_message("assistant", full_response)
+            _persist_messages(session.session_id, request.prompt, full_response)
             session.status = SessionStatus.COMPLETED
             session.updated_at = datetime.now()
+            _persist_session(session)
 
             yield f"event: done\ndata: {json.dumps({'status': 'completed', 'session_id': session_id})}\n\n"
 
@@ -560,6 +678,7 @@ async def process_prompt_stream(request: PromptRequest):
             session.status = SessionStatus.ERROR
             session.error = str(e)
             session.updated_at = datetime.now()
+            _persist_session(session)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -599,7 +718,15 @@ async def get_status(session_id: str):
         raise HTTPException(status_code=422, detail=str(e))
 
     if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        # Try loading from persistent store
+        if session_store:
+            stored = session_store.get_session(session_id)
+            if stored:
+                sessions[session_id] = stored
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     session = sessions[session_id]
 
@@ -671,7 +798,14 @@ async def apply_changes(request: ApplyChangesRequest):
         HTTPException: If session not found
     """
     if request.session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        if session_store:
+            stored = session_store.get_session(request.session_id)
+            if stored:
+                sessions[request.session_id] = stored
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     session = sessions[request.session_id]
 
@@ -704,8 +838,6 @@ async def apply_changes(request: ApplyChangesRequest):
                         else:
                             raise ValueError(f"Change {change_id} has no new_content")
                     elif change.change_type == ChangeType.DELETE:
-                        # For delete operations, we would need to implement a delete method
-                        # For now, log a warning as delete is not yet implemented
                         logger.warning(f"DELETE operation not yet implemented for change {change_id}")
                         raise NotImplementedError("DELETE operation not yet implemented")
 
@@ -722,6 +854,10 @@ async def apply_changes(request: ApplyChangesRequest):
                 errors[change_id] = "Change not found"
 
     session.updated_at = datetime.now()
+    # Persist applied state
+    if session_store and applied:
+        session_store.mark_changes_applied(request.session_id, applied)
+    _persist_session(session)
 
     return ApplyChangesResponse(
         applied=applied,
@@ -744,11 +880,19 @@ async def cancel_session(request: CancelRequest):
         HTTPException: If session not found
     """
     if request.session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        if session_store:
+            stored = session_store.get_session(request.session_id)
+            if stored:
+                sessions[request.session_id] = stored
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     session = sessions[request.session_id]
     session.status = SessionStatus.CANCELLED
     session.updated_at = datetime.now()
+    _persist_session(session)
 
     return CancelResponse(status="cancelled")
 
@@ -768,7 +912,14 @@ async def notify_applied(request: NotifyAppliedRequest):
         HTTPException: If session not found
     """
     if request.session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        if session_store:
+            stored = session_store.get_session(request.session_id)
+            if stored:
+                sessions[request.session_id] = stored
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
 
     session = sessions[request.session_id]
     marked_count = 0
@@ -780,6 +931,48 @@ async def notify_applied(request: NotifyAppliedRequest):
                 marked_count += 1
 
     session.updated_at = datetime.now()
+    if session_store and marked_count > 0:
+        session_store.mark_changes_applied(request.session_id, request.change_ids)
+    _persist_session(session)
 
     return {"marked_applied": marked_count}
 
+
+
+@app.get("/agent/sessions")
+async def list_sessions(workspace_path: Optional[str] = None, limit: int = 20):
+    """List recent sessions, optionally filtered by workspace.
+
+    Args:
+        workspace_path: Filter by workspace (optional)
+        limit: Max sessions to return (default 20)
+
+    Returns:
+        List of session summaries
+    """
+    if not session_store:
+        # Fall back to in-memory sessions
+        result = []
+        for sid, s in sorted(
+            sessions.items(),
+            key=lambda x: x[1].updated_at,
+            reverse=True,
+        )[:limit]:
+            if workspace_path and s.workspace_path != workspace_path:
+                continue
+            result.append({
+                "session_id": s.session_id,
+                "workspace_path": s.workspace_path,
+                "status": s.status.value,
+                "created_at": s.created_at.isoformat(),
+                "updated_at": s.updated_at.isoformat(),
+                "message_count": len(s.conversation_history),
+            })
+        return result
+
+    stored = session_store.list_sessions(workspace_path, limit)
+    for item in stored:
+        item["message_count"] = session_store.get_message_count(
+            item["session_id"]
+        )
+    return stored

@@ -5,8 +5,17 @@
 - Python 3.x with type hints
 - FastAPI for REST API server
 - Pydantic for data validation and settings management
-- llama.cpp for LLM inference (CUDA-accelerated)
-- Qwen2.5-Coder-7B-Instruct (Q4_K_M quantized, ~4.37GB)
+- SQLite for session persistence (via stdlib sqlite3)
+- llama.cpp for LLM inference (CUDA-accelerated) — default provider
+- Supports multiple LLM backends: llama.cpp, Anthropic Claude, Ollama
+
+## Supported Models
+
+- Qwen2.5-Coder-7B/14B-Instruct (Q4_K_M quantized) — via llama.cpp
+- DeepSeek Coder V2 — via llama.cpp or Ollama
+- Llama 3 / CodeLlama — via llama.cpp or Ollama
+- Claude (Sonnet/Haiku) — via Anthropic API
+- Any OpenAI-compatible model — via the openai_compatible provider
 
 ## Key Libraries
 
@@ -51,6 +60,13 @@ mypy agent/ llm/ server/
 ## Configuration
 
 - Primary config: `config.yaml` (copy from `config.example.yaml`)
-- Environment overrides: `AGENT_LLM_BASE_URL`, `AGENT_HOST`, `AGENT_PORT`
+- LLM provider: `llm.provider` — one of `openai_compatible`, `anthropic`, `ollama`
+- Environment overrides:
+  - `AGENT_LLM_BASE_URL`, `AGENT_LLM_MODEL`, `AGENT_LLM_PROVIDER`
+  - `AGENT_LLM_API_KEY` (for Anthropic)
+  - `AGENT_LLM_CONTEXT_WINDOW` (override context window size)
+  - `AGENT_HOST`, `AGENT_PORT`
+  - `AGENT_SESSION_DB` (path to sessions database, default: `data/sessions.db`)
 - LLM server: OpenAI-compatible API at `http://localhost:8001/v1`
 - Agent server: FastAPI at `http://localhost:8000`
+- Session database: `data/sessions.db` (SQLite, auto-created)

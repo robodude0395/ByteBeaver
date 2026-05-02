@@ -32,24 +32,35 @@ import difflib
 from typing import Optional, List, Dict, Any, Iterator, Tuple
 
 from llm.client import LLMClient
+from llm.provider import ModelProvider, create_provider, OpenAICompatibleProvider
 from tools.base import ToolSystem
 from tools.remote_filesystem import ProxyUnavailableError
 from agent.models import FileChange, ToolCall, ChangeType
 from server.validation import validate_llm_output_path
 from utils.tokens import count_tokens, truncate_to_tokens
+from agent.context_budget import (
+    trim_messages_to_budget,
+    compress_tool_result,
+    compute_budget,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 10
 
 # Maximum tokens for a single tool result fed back to the LLM.
+# This is the default — compress_tool_result may use less for certain tools.
 MAX_TOOL_RESULT_TOKENS = 1500
 
 # Maximum tokens for the workspace file tree in the system prompt.
+# Scales with context window — larger windows get more tree detail.
 MAX_TREE_TOKENS = 400
 
 # Reserve tokens for the LLM's generation (must match max_tokens sent to LLM).
 GENERATION_RESERVE = 2048
+
+# Minimum context window we'll work with
+MIN_CONTEXT_WINDOW = 4096
 
 
 SYSTEM_PROMPT = """\
@@ -151,12 +162,38 @@ When the user shares an error, traceback, or asks you to fix/debug code:
 ## Code Generation Rules — CRITICAL
 When the user asks you to create, write, or build ANY code (scripts, apps, games, tools, etc.):
 1. You MUST use the write_file tool via an ACTION block to save the code to a file. NEVER just show code in chat and tell the user to copy-paste it. The user expects files to appear in their workspace.
-2. If the project needs external dependencies, ALSO create a requirements.txt file using write_file.
-3. For large tasks, break the work into multiple smaller files or functions.
-4. Keep individual files under 150 lines when possible.
-5. Write complete, runnable code — no placeholders like "# TODO: implement this".
-6. Include necessary imports and handle common edge cases.
-7. After creating files, briefly explain what you created and how to run it.
+2. If the code imports ANY library that is not in the Python standard library (e.g. pygame, flask, requests, numpy, etc.), you MUST also create a requirements.txt file using a separate write_file ACTION block listing those dependencies. Always do this — no exceptions.
+3. After creating all files, give the user clear setup instructions:
+   - How to install dependencies: pip install -r requirements.txt
+   - How to run the program: python <filename>.py
+   - Any other setup steps needed
+4. For large tasks, break the work into multiple smaller files or functions.
+5. Keep individual files under 150 lines when possible.
+6. Write complete, runnable code — no placeholders like "# TODO: implement this".
+7. Include necessary imports and handle common edge cases.
+
+## Planning Before Coding — For Complex Tasks
+When the user asks for something non-trivial (a game, a web app, a multi-file project, anything with multiple components), THINK BEFORE YOU CODE:
+
+1. **Plan first**: Before writing any file, briefly outline:
+   - What files you'll create and what each one does
+   - What libraries/dependencies are needed
+   - The key classes/functions and how they connect
+2. **Build incrementally**: Write one file at a time. After writing each file, verify it makes sense before moving to the next.
+3. **Use proper libraries**: For games, use pygame. For web apps, use flask or fastapi. For GUIs, use tkinter. Don't try to build complex things with just print() and os.system('clear').
+4. **Structure matters**: For anything over ~100 lines, split into multiple files:
+   - A main entry point (main.py or app.py)
+   - Separate modules for game logic, rendering, input handling, etc.
+   - A requirements.txt for dependencies
+5. **Test as you go**: After writing files, use run_command to verify they at least import correctly.
+
+Example plan for "Create a Tetris game":
+- tetris/main.py — entry point, game loop, pygame init
+- tetris/board.py — grid state, collision detection, line clearing
+- tetris/pieces.py — tetromino shapes, rotation logic
+- tetris/renderer.py — drawing the board, pieces, score, UI
+- tetris/requirements.txt — pygame
+This approach produces better code than trying to write everything in one giant file.
 
 ## Rules
 - When asked about the workspace, project, or code: USE tools first, then answer based on what you find.
@@ -441,67 +478,19 @@ def _count_messages_tokens(messages: List[Dict[str, str]]) -> int:
 def _trim_messages_to_budget(
     messages: List[Dict[str, str]],
     max_input_tokens: int,
+    context_window: int = 8192,
 ) -> List[Dict[str, str]]:
-    """Trim messages to fit within *max_input_tokens*.
+    """Trim messages to fit within the context window.
 
-    Strategy — keep in priority order:
-      1. System prompt (messages[0]) — always kept, but tree section may
-         be truncated by the caller before we get here.
-      2. The last user message (messages[-1]) — always kept.
-      3. Recent messages — kept from the end, dropping oldest first.
-
-    Returns a new list (does not mutate the input).
+    Delegates to the context_budget module for smarter allocation.
+    The max_input_tokens param is kept for backward compat but the
+    context_window is what drives the budget calculation.
     """
-    if not messages:
-        return messages
-
-    system_msg = messages[0]  # always system
-    last_msg = messages[-1]   # current user message
-    middle = messages[1:-1]   # conversation history + tool rounds
-
-    # Tokens for the parts we always keep
-    fixed_cost = count_tokens(system_msg["content"]) + 4
-    fixed_cost += count_tokens(last_msg["content"]) + 4
-
-    remaining_budget = max_input_tokens - fixed_cost
-    if remaining_budget <= 0:
-        # Even system + user message is over budget — truncate system prompt
-        logger.warning(
-            "System prompt + user message alone exceed budget (%d tokens). "
-            "Truncating system prompt.", fixed_cost,
-        )
-        truncated_system = truncate_to_tokens(
-            system_msg["content"],
-            max_input_tokens - count_tokens(last_msg["content"]) - 100,
-        )
-        return [
-            {"role": "system", "content": truncated_system},
-            last_msg,
-        ]
-
-    # Walk backwards through middle messages, keeping as many as fit
-    kept: List[Dict[str, str]] = []
-    for msg in reversed(middle):
-        cost = count_tokens(msg.get("content", "")) + 4
-        if cost <= remaining_budget:
-            kept.append(msg)
-            remaining_budget -= cost
-        else:
-            # Try to fit a truncated version if it's a big tool result
-            if remaining_budget > 100:
-                truncated = truncate_to_tokens(msg["content"], remaining_budget - 10)
-                kept.append({"role": msg["role"], "content": truncated})
-                remaining_budget = 0
-            break
-
-    kept.reverse()
-
-    trimmed = [system_msg] + kept + [last_msg]
-    logger.debug(
-        "Trimmed messages: %d → %d messages, ~%d tokens",
-        len(messages), len(trimmed), _count_messages_tokens(trimmed),
+    return trim_messages_to_budget(
+        messages,
+        context_window=context_window,
+        generation_reserve=GENERATION_RESERVE,
     )
-    return trimmed
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +513,7 @@ class AgentLoop:
 
     def __init__(
         self,
-        llm_client: LLMClient,
+        llm_client: "LLMClient | ModelProvider",
         tool_system: ToolSystem,
         context_engine: Optional[Any] = None,
         workspace_path: str = ".",
@@ -534,9 +523,17 @@ class AgentLoop:
         self.tool_system = tool_system
         self.context_engine = context_engine
         self.workspace_path = workspace_path
-        self.context_window = context_window
+        self.context_window = max(context_window, MIN_CONTEXT_WINDOW)
         # Max tokens the LLM can use for input (reserve space for generation)
-        self.max_input_tokens = context_window - GENERATION_RESERVE
+        self.max_input_tokens = self.context_window - GENERATION_RESERVE
+        # Scale tree tokens with context window
+        self.max_tree_tokens = min(
+            int(self.context_window * 0.06), 800
+        )
+        # Scale tool result tokens with context window
+        self.max_tool_result_tokens = min(
+            int(self.context_window * 0.15), 3000
+        )
 
     # ------------------------------------------------------------------
     # Pre-processing: enrich user message with file contents on errors
@@ -665,7 +662,9 @@ class AgentLoop:
             logger.info("Agent loop round %d", round_num + 1)
 
             # --- Token budget enforcement ---
-            messages = _trim_messages_to_budget(messages, self.max_input_tokens)
+            messages = _trim_messages_to_budget(
+                messages, self.max_input_tokens, self.context_window
+            )
 
             # Use lower temperature for code-heavy requests
             temp = self._pick_temperature(message)
@@ -736,8 +735,10 @@ class AgentLoop:
             if result.startswith("Error:"):
                 failed_tool_calls.add(current_call_key)
 
-            # --- Truncate large tool results ---
-            result = truncate_to_tokens(result, MAX_TOOL_RESULT_TOKENS)
+            # --- Compress tool results (tool-aware, not just truncation) ---
+            result = compress_tool_result(
+                result, tool_name, self.max_tool_result_tokens
+            )
 
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
@@ -817,7 +818,9 @@ class AgentLoop:
             logger.info("Agent loop (streaming) round %d", round_num + 1)
 
             # --- Token budget enforcement ---
-            messages = _trim_messages_to_budget(messages, self.max_input_tokens)
+            messages = _trim_messages_to_budget(
+                messages, self.max_input_tokens, self.context_window
+            )
 
             temp = self._pick_temperature(message)
 
@@ -895,8 +898,10 @@ class AgentLoop:
             if result.startswith("Error:"):
                 failed_tool_calls.add(current_call_key)
 
-            # --- Truncate large tool results ---
-            result = truncate_to_tokens(result, MAX_TOOL_RESULT_TOKENS)
+            # --- Compress tool results (tool-aware) ---
+            result = compress_tool_result(
+                result, tool_name, self.max_tool_result_tokens
+            )
 
             tool_calls_made.append(ToolCall(
                 tool_name=tool_name,
@@ -979,7 +984,7 @@ class AgentLoop:
                 tree = self._build_remote_tree()
                 if tree:
                     tree_str = self._format_tree(tree)
-                    tree_str = truncate_to_tokens(tree_str, MAX_TREE_TOKENS)
+                    tree_str = truncate_to_tokens(tree_str, self.max_tree_tokens)
                     system_content += f"\n\n## Current Workspace Structure\n{tree_str}"
             except Exception as e:
                 logger.warning("Failed to get remote file tree: %s", e)
@@ -987,7 +992,7 @@ class AgentLoop:
             try:
                 tree = self.context_engine.get_file_tree(self.workspace_path)
                 tree_str = self._format_tree(tree)
-                tree_str = truncate_to_tokens(tree_str, MAX_TREE_TOKENS)
+                tree_str = truncate_to_tokens(tree_str, self.max_tree_tokens)
                 system_content += f"\n\n## Current Workspace Structure\n{tree_str}"
             except Exception as e:
                 logger.warning("Failed to get file tree: %s", e)

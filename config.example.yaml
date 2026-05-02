@@ -1,10 +1,12 @@
 # LLM Server Configuration
 llm:
+  provider: "openai_compatible"  # openai_compatible, anthropic, ollama
   base_url: "http://localhost:8001/v1"
-  model: "qwen2.5-coder-7b-instruct"
+  model: "qwen2.5-coder-14b-instruct"
   max_tokens: 2048
   temperature: 0.2
   context_window: 8192
+  api_key: ""  # Required for anthropic provider
 
 # Agent Server Configuration
 agent:

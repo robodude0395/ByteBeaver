@@ -43,6 +43,9 @@ config.yaml
 models/
 *.gguf
 
+# Session data
+data/
+
 # Testing
 .pytest_cache/
 .coverage

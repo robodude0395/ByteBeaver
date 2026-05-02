@@ -140,38 +140,9 @@ class AgentSession:
     def add_message(self, role: str, content: str) -> None:
         """Append a message to conversation history.
 
-        Uses a two-tier strategy:
-        1. Hard cap at 30 messages (prevents unbounded memory growth).
-        2. Token-aware trimming: drops oldest messages when total tokens
-           exceed ~3000 so the agent loop has room for system prompt +
-           current message + tool rounds within the context window.
-        """
-        from utils.tokens import count_tokens
-
-        self.conversation_history.append({"role": role, "content": content})
-
-        # Hard cap — drop oldest first
-        if len(self.conversation_history) > 30:
-            self.conversation_history = self.conversation_history[-30:]
-
-        # Token-aware trim — keep total history under budget
-        max_history_tokens = 3000
-        while len(self.conversation_history) > 2:
-            total = sum(
-                count_tokens(m.get("content", ""))
-                for m in self.conversation_history
-            )
-            if total <= max_history_tokens:
-                break
-            # Drop the oldest message
-            self.conversation_history.pop(0)
-
-    def add_message(self, role: str, content: str) -> None:
-        """Append a message to conversation history.
-
-        Keeps a rolling window of the last 20 messages to stay within
-        token budgets.
+        This is the in-memory append only. Persistence and summarization
+        are handled by SessionStore and the summarizer module. The in-memory
+        list is kept unbounded here — the agent loop and API layer are
+        responsible for trimming what gets sent to the LLM.
         """
         self.conversation_history.append({"role": role, "content": content})
-        if len(self.conversation_history) > 20:
-            self.conversation_history = self.conversation_history[-20:]

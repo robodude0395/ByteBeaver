@@ -1,1 +1,1 @@
-"""LLM client interface."""
+"""LLM client and provider modules."""
