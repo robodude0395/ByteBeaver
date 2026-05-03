@@ -156,7 +156,11 @@ describe('Chat Panel ↔ Agent Client Integration', () => {
             notifyChangesApplied: jest.fn(),
         } as unknown as jest.Mocked<AgentClient>;
 
-        chatPanel = new ChatPanel(vscode.Uri.file('/ext'), mockClient);
+        chatPanel = new ChatPanel(vscode.Uri.file('/ext'), mockClient, {
+            get: jest.fn().mockReturnValue(undefined),
+            update: jest.fn().mockResolvedValue(undefined),
+            keys: jest.fn().mockReturnValue([]),
+        } as unknown as import('vscode').Memento);
 
         // Simulate resolving the webview view
         webviewPostMessage = jest.fn();
@@ -539,7 +543,11 @@ describe('Chat Panel → DiffProvider End-to-End Flow', () => {
             notifyChangesApplied: jest.fn(),
         } as unknown as jest.Mocked<AgentClient>;
 
-        chatPanel = new ChatPanel(vscode.Uri.file('/ext'), mockClient);
+        chatPanel = new ChatPanel(vscode.Uri.file('/ext'), mockClient, {
+            get: jest.fn().mockReturnValue(undefined),
+            update: jest.fn().mockResolvedValue(undefined),
+            keys: jest.fn().mockReturnValue([]),
+        } as unknown as import('vscode').Memento);
         diffProvider = new DiffProvider(mockClient, vscode.Uri.file('/ext'));
 
         // Wire them together like extension.ts does

@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push({ dispose: () => fileProxy.stop() });
 
     // Create and register chat panel
-    const chatPanel = new ChatPanel(context.extensionUri, agentClient);
+    const chatPanel = new ChatPanel(context.extensionUri, agentClient, context.globalState);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             ChatPanel.viewType,
