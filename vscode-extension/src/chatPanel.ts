@@ -41,10 +41,18 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     ): void {
         this.view = webviewView;
 
+        // Keep the webview alive when the panel is hidden so that
+        // streaming SSE connections and in-flight agent loops are not
+        // interrupted when the user clicks away from the panel.
         webviewView.webview.options = {
             enableScripts: true,
             localResourceRoots: [this.extensionUri],
         };
+
+        // This is the critical line — without it, VSCode destroys the
+        // webview DOM when the panel loses focus, killing any active
+        // fetch/SSE streams.
+        (webviewView as any).options = { retainContextWhenHidden: true };
 
         webviewView.webview.html = this.getHtmlForWebview(webviewView.webview);
 
