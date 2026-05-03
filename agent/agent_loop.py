@@ -789,12 +789,16 @@ class AgentLoop:
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> Iterator[Dict[str, Any]]:
         """
-        Run the agent loop with streaming output.
+        Run the agent loop with true streaming output.
+
+        Uses stream_complete() so tokens arrive incrementally instead of
+        waiting for the full response. This prevents timeouts on slow
+        hardware where a single completion can take several minutes.
 
         Yields events as they happen:
             - {"event": "thinking", "data": "tool_name"} — when calling a tool
             - {"event": "tool_result", "data": "..."} — tool execution result
-            - {"event": "token", "data": "..."} — streaming token from final answer
+            - {"event": "token", "data": "..."} — streaming token
             - {"event": "file_change", "data": FileChange} — proposed file change
             - {"event": "done", "data": {...}} — loop complete
 
@@ -824,20 +828,45 @@ class AgentLoop:
 
             temp = self._pick_temperature(message)
 
-            response = self.llm_client.complete(
-                messages=messages,
-                temperature=temp,
-                max_tokens=GENERATION_RESERVE,
-            )
+            # --- Stream tokens from the LLM ---
+            response_chunks: List[str] = []
+            found_action_early = False
+
+            try:
+                for token in self.llm_client.stream_complete(
+                    messages=messages,
+                    temperature=temp,
+                    max_tokens=GENERATION_RESERVE,
+                ):
+                    response_chunks.append(token)
+
+                    # Stream tokens to the client in real time
+                    yield {"event": "token", "data": token}
+
+                    # Check if we've received an ACTION block — if so, we
+                    # can stop streaming early and execute the tool
+                    partial = "".join(response_chunks)
+                    if "\nACTION:" in partial or partial.startswith("ACTION:"):
+                        # Check if the action block looks complete
+                        # (has the closing ```)
+                        action_start = partial.find("ACTION:")
+                        after_action = partial[action_start:]
+                        # Need at least: ACTION: name\n```json\n{...}\n```
+                        if after_action.count("```") >= 2:
+                            found_action_early = True
+                            break
+
+            except (ConnectionError, TimeoutError) as e:
+                logger.error("LLM streaming failed: %s", e)
+                yield {"event": "error", "data": {"error": str(e)}}
+                return
+
+            response = "".join(response_chunks)
 
             action = _parse_action(response)
 
             if action is None:
-                # Final answer — stream the already-obtained response
-                chunk_size = 4
-                for i in range(0, len(response), chunk_size):
-                    yield {"event": "token", "data": response[i:i + chunk_size]}
-
+                # Final answer — tokens were already streamed above
                 file_changes = _parse_file_changes(response, self.workspace_path)
                 for fc in file_changes:
                     all_file_changes.append(fc)
