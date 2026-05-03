@@ -105,7 +105,7 @@ class OpenAICompatibleProvider(ModelProvider):
         model: str,
         max_tokens: int = 2048,
         context_window: int = 8192,
-        timeout: int = 120,
+        timeout: int = 300,
         api_key: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -384,7 +384,7 @@ class OllamaProvider(ModelProvider):
         model: str = "llama3",
         max_tokens: int = 2048,
         context_window: int = 8192,
-        timeout: int = 120,
+        timeout: int = 300,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model

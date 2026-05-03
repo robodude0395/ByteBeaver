@@ -20,7 +20,7 @@ class LLMClient:
         self.base_url = base_url.rstrip('/')
         self.model = model
         self.max_tokens = max_tokens
-        self.timeout = 120  # 2 minutes timeout for completions
+        self.timeout = 300  # 5 minutes timeout for completions
 
     def complete(
         self,

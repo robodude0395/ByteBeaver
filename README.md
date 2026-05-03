@@ -215,9 +215,33 @@ curl http://localhost:8000/health
 
 ### 4. Install the VSCode extension
 
+First, build the `.vsix` package:
+
 ```bash
-code --install-extension vscode-extension/local-offline-coding-agent-0.0.1.vsix
+cd vscode-extension
+npm install
+node esbuild.js
+npx vsce package
 ```
+
+This produces `local-offline-coding-agent-0.0.1.vsix` in the `vscode-extension/` folder.
+
+Then install it:
+
+**Option A: Command line**
+
+```bash
+code --install-extension local-offline-coding-agent-0.0.1.vsix
+```
+
+**Option B: Manual install from VSCode**
+
+1. Open VSCode
+2. Go to the Extensions view (`Ctrl+Shift+X` / `Cmd+Shift+X`)
+3. Click the `...` menu at the top of the Extensions sidebar
+4. Select **Install from VSIX...**
+5. Browse to `vscode-extension/local-offline-coding-agent-0.0.1.vsix` and select it
+6. Reload the window when prompted (`Ctrl+Shift+P` / `Cmd+Shift+P` → "Reload Window")
 
 Open VSCode, find the **Coding Agent** icon in the activity bar, and start chatting.
 
