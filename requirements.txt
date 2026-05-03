@@ -2,18 +2,16 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.5.3
-pydantic-settings==2.1.0
-python-multipart==0.0.6
 
 # HTTP client
 requests==2.31.0
-httpx==0.26.0
 
 # Configuration
 pyyaml==6.0.1
 
-# Data processing
-python-dateutil==2.8.2
+# Strands SDK
+strands-agents
+strands-agents-tools
 
 # Testing
 pytest==7.4.4
@@ -25,15 +23,3 @@ hypothesis==6.98.3
 black==24.1.1
 pylint==3.0.3
 mypy==1.8.0
-
-# Vector database and embeddings (for Phase 3)
-qdrant-client==1.17.0
-sentence-transformers==2.3.1
-
-# Web scraping (for Phase 5)
-duckduckgo-search==4.1.1
-beautifulsoup4==4.12.3
-lxml==5.1.0
-
-# Utilities
-tiktoken

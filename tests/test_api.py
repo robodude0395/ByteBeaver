@@ -1,15 +1,22 @@
 """Tests for FastAPI server endpoints."""
+import json
 import pytest
 import tempfile
 import os
-from datetime import datetime
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from server.api import app, sessions
-from agent.models import (
-    AgentSession, SessionStatus, FileChange, ChangeType,
-    ExecutionResult
-)
+import server.api as api_module
+from server.api import app, sessions, get_or_create_session, _format_sse
+from agent.models import FileChange, ChangeType
+
+
+@pytest.fixture(autouse=True)
+def clear_sessions():
+    """Clear sessions before each test."""
+    sessions.clear()
+    yield
+    sessions.clear()
 
 
 @pytest.fixture
@@ -25,242 +32,418 @@ def temp_workspace():
         yield tmpdir
 
 
-@pytest.fixture
-def mock_session(temp_workspace):
-    """Create a mock session with file changes."""
-    session_id = "test-session-123"
+# ---------------------------------------------------------------------------
+# _format_sse tests
+# ---------------------------------------------------------------------------
 
-    # Create a test file change
-    change = FileChange(
-        change_id="change-1",
-        file_path="test_file.py",
-        change_type=ChangeType.CREATE,
-        new_content="print('Hello, World!')\n",
-        diff="+ print('Hello, World!')\n"
-    )
+class TestFormatSSE:
+    """Tests for the SSE formatting helper."""
 
-    execution_result = ExecutionResult(
-        plan_id="plan-1",
-        status="completed",
-        completed_tasks=["task-1"],
-        failed_tasks=[],
-        all_changes=[change]
-    )
+    def test_format_sse_session_event(self):
+        result = _format_sse("session", {"session_id": "abc-123"})
+        assert result == 'event: session\ndata: {"session_id": "abc-123"}\n\n'
 
-    session = AgentSession(
-        session_id=session_id,
-        workspace_path=temp_workspace,
-        execution_result=execution_result,
-        status=SessionStatus.COMPLETED
-    )
+    def test_format_sse_done_event(self):
+        result = _format_sse("done", {"status": "completed", "session_id": "x"})
+        assert "event: done\n" in result
+        assert '"status": "completed"' in result
+        assert result.endswith("\n\n")
 
-    # Store in global sessions dict
-    sessions[session_id] = session
-
-    yield session
-
-    # Cleanup
-    if session_id in sessions:
-        del sessions[session_id]
+    def test_format_sse_chat_token_event(self):
+        result = _format_sse("chat_token", {"token": "Hello"})
+        assert result.startswith("event: chat_token\n")
+        parsed = json.loads(result.split("data: ")[1].strip())
+        assert parsed["token"] == "Hello"
 
 
-class TestApplyChanges:
-    """Tests for POST /agent/apply_changes endpoint."""
+# ---------------------------------------------------------------------------
+# get_or_create_session tests
+# ---------------------------------------------------------------------------
 
-    def test_apply_changes_creates_new_file(self, client, mock_session, temp_workspace):
-        """Test that applying a CREATE change writes the file to disk."""
-        # Apply the change
-        response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["change-1"]
-            }
-        )
+class TestGetOrCreateSession:
+    """Tests for session management."""
 
-        # Check response
-        assert response.status_code == 200
-        data = response.json()
-        assert data["applied"] == ["change-1"]
-        assert data["failed"] == []
-        assert data["errors"] == {}
+    def test_creates_new_session_when_no_id(self):
+        sid, session = get_or_create_session(None, "/workspace")
+        assert sid in sessions
+        assert session["workspace_path"] == "/workspace"
+        assert session["history"] == []
+        assert session["changes"] == []
 
-        # Verify file was created
-        file_path = os.path.join(temp_workspace, "test_file.py")
-        assert os.path.exists(file_path)
+    def test_creates_new_session_with_provided_id(self):
+        sid, session = get_or_create_session("my-id", "/workspace")
+        assert sid == "my-id"
+        assert "my-id" in sessions
 
-        # Verify file contents
-        with open(file_path, 'r') as f:
-            content = f.read()
-        assert content == "print('Hello, World!')\n"
+    def test_retrieves_existing_session(self):
+        sessions["existing"] = {
+            "workspace_path": "/ws",
+            "history": [{"role": "user", "content": "hi"}],
+            "changes": [],
+        }
+        sid, session = get_or_create_session("existing", "/ws")
+        assert sid == "existing"
+        assert len(session["history"]) == 1
 
-        # Verify change is marked as applied
-        change = mock_session.execution_result.all_changes[0]
-        assert change.applied is True
+    def test_creates_new_if_id_not_found(self):
+        sid, session = get_or_create_session("unknown-id", "/ws")
+        assert sid == "unknown-id"
+        assert session["history"] == []
 
-    def test_apply_changes_modifies_existing_file(self, client, mock_session, temp_workspace):
-        """Test that applying a MODIFY change updates the file."""
-        # Create initial file
-        file_path = os.path.join(temp_workspace, "existing.py")
-        with open(file_path, 'w') as f:
-            f.write("old content\n")
 
-        # Add a modify change to session
-        modify_change = FileChange(
-            change_id="change-2",
-            file_path="existing.py",
-            change_type=ChangeType.MODIFY,
-            original_content="old content\n",
-            new_content="new content\n",
-            diff="- old content\n+ new content\n"
-        )
-        mock_session.execution_result.all_changes.append(modify_change)
+# ---------------------------------------------------------------------------
+# POST /agent/prompt/stream tests
+# ---------------------------------------------------------------------------
 
-        # Apply the change
-        response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["change-2"]
-            }
-        )
+class TestPromptStreamEndpoint:
+    """Tests for the streaming prompt endpoint."""
 
-        # Check response
-        assert response.status_code == 200
-        data = response.json()
-        assert "change-2" in data["applied"]
+    def test_returns_503_when_config_is_none(self, client, temp_workspace):
+        """Req 4.7: Return HTTP 503 if LLM provider is not initialized."""
+        original_config = api_module.config
+        api_module.config = None
+        try:
+            response = client.post(
+                "/agent/prompt/stream",
+                json={
+                    "prompt": "Hello",
+                    "workspace_path": temp_workspace,
+                },
+            )
+            assert response.status_code == 503
+            assert "LLM client not initialized" in response.json()["detail"]
+        finally:
+            api_module.config = original_config
 
-        # Verify file was modified
-        with open(file_path, 'r') as f:
-            content = f.read()
-        assert content == "new content\n"
+    def test_stream_emits_session_event_first(self, client, temp_workspace):
+        """Req 9.1: SSE stream starts with a session event."""
+        # Create a mock config and agent wrapper
+        mock_config = MagicMock()
 
-    def test_apply_changes_with_subdirectory(self, client, mock_session, temp_workspace):
-        """Test that applying changes creates parent directories."""
-        # Add a change with subdirectory path
-        subdir_change = FileChange(
-            change_id="change-3",
-            file_path="src/utils/helper.py",
+        # Mock StrandsAgentWrapper to yield a simple done event
+        mock_wrapper_instance = MagicMock()
+        mock_wrapper_instance.run.return_value = iter([
+            {"event": "done", "data": {"status": "completed", "session_id": "test"}},
+        ])
+
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                return_value=mock_wrapper_instance,
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Hello",
+                        "workspace_path": temp_workspace,
+                    },
+                )
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith("text/event-stream")
+
+                # Parse SSE events
+                events = _parse_sse_events(response.text)
+                assert len(events) >= 1
+                assert events[0]["event"] == "session"
+                assert "session_id" in events[0]["data"]
+        finally:
+            api_module.config = original_config
+
+    def test_stream_emits_done_event_last(self, client, temp_workspace):
+        """Req 9.6: SSE stream ends with a done event."""
+        mock_config = MagicMock()
+        mock_wrapper_instance = MagicMock()
+        mock_wrapper_instance.run.return_value = iter([
+            {"event": "chat_token", "data": {"token": "Hi"}},
+            {"event": "done", "data": {"status": "completed", "session_id": "s1"}},
+        ])
+
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                return_value=mock_wrapper_instance,
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Hello",
+                        "workspace_path": temp_workspace,
+                    },
+                )
+                events = _parse_sse_events(response.text)
+                # Last event should be done
+                assert events[-1]["event"] == "done"
+                assert events[-1]["data"]["status"] == "completed"
+        finally:
+            api_module.config = original_config
+
+    def test_stream_collects_tokens_into_history(self, client, temp_workspace):
+        """Req 4.4: Session history is updated with user and assistant messages."""
+        mock_config = MagicMock()
+        mock_wrapper_instance = MagicMock()
+        mock_wrapper_instance.run.return_value = iter([
+            {"event": "chat_token", "data": {"token": "Hello "}},
+            {"event": "chat_token", "data": {"token": "world"}},
+            {"event": "done", "data": {"status": "completed", "session_id": "s1"}},
+        ])
+
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                return_value=mock_wrapper_instance,
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Say hello",
+                        "workspace_path": temp_workspace,
+                    },
+                )
+                assert response.status_code == 200
+
+                # Find the session that was created
+                assert len(sessions) == 1
+                session = list(sessions.values())[0]
+                # History should have user message + assistant message
+                assert len(session["history"]) == 2
+                assert session["history"][0] == {"role": "user", "content": "Say hello"}
+                assert session["history"][1] == {"role": "assistant", "content": "Hello world"}
+        finally:
+            api_module.config = original_config
+
+    def test_stream_stores_file_changes_in_session(self, client, temp_workspace):
+        """Req 4.5: File change events are stored in the session."""
+        mock_config = MagicMock()
+        file_change = FileChange(
+            change_id="fc-1",
+            file_path="test.py",
             change_type=ChangeType.CREATE,
-            new_content="def helper():\n    pass\n",
-            diff="+ def helper():\n+     pass\n"
+            diff="+ print('hi')",
         )
-        mock_session.execution_result.all_changes.append(subdir_change)
+        mock_wrapper_instance = MagicMock()
+        mock_wrapper_instance.run.return_value = iter([
+            {"event": "file_change", "data": file_change},
+            {"event": "done", "data": {"status": "completed", "session_id": "s1"}},
+        ])
 
-        # Apply the change
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                return_value=mock_wrapper_instance,
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Create a file",
+                        "workspace_path": temp_workspace,
+                    },
+                )
+                assert response.status_code == 200
+
+                # Check file change was stored in session
+                session = list(sessions.values())[0]
+                assert len(session["changes"]) == 1
+                assert session["changes"][0].change_id == "fc-1"
+
+                # Check SSE event has serialized FileChange
+                events = _parse_sse_events(response.text)
+                fc_events = [e for e in events if e["event"] == "file_change"]
+                assert len(fc_events) == 1
+                assert fc_events[0]["data"]["change_id"] == "fc-1"
+                assert fc_events[0]["data"]["file_path"] == "test.py"
+        finally:
+            api_module.config = original_config
+
+    def test_stream_handles_agent_error(self, client, temp_workspace):
+        """Req 9.7: Errors during streaming emit an error SSE event."""
+        mock_config = MagicMock()
+
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                side_effect=RuntimeError("LLM connection failed"),
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Hello",
+                        "workspace_path": temp_workspace,
+                    },
+                )
+                assert response.status_code == 200  # SSE stream still returns 200
+                events = _parse_sse_events(response.text)
+                error_events = [e for e in events if e["event"] == "error"]
+                assert len(error_events) == 1
+                assert "LLM connection failed" in error_events[0]["data"]["error"]
+        finally:
+            api_module.config = original_config
+
+    def test_stream_with_existing_session(self, client, temp_workspace):
+        """Req 4.4: Existing session is retrieved and reused."""
+        mock_config = MagicMock()
+        session_id = "11111111-1111-1111-1111-111111111111"
+        sessions[session_id] = {
+            "workspace_path": temp_workspace,
+            "history": [{"role": "user", "content": "previous"}],
+            "changes": [],
+        }
+
+        mock_wrapper_instance = MagicMock()
+        mock_wrapper_instance.run.return_value = iter([
+            {"event": "done", "data": {"status": "completed", "session_id": session_id}},
+        ])
+
+        original_config = api_module.config
+        api_module.config = mock_config
+        try:
+            with patch(
+                "server.api.StrandsAgentWrapper",
+                return_value=mock_wrapper_instance,
+            ):
+                response = client.post(
+                    "/agent/prompt/stream",
+                    json={
+                        "prompt": "Follow up",
+                        "workspace_path": temp_workspace,
+                        "session_id": session_id,
+                    },
+                )
+                assert response.status_code == 200
+                events = _parse_sse_events(response.text)
+                # Session event should use the existing session_id
+                assert events[0]["data"]["session_id"] == session_id
+                # History should have previous + new user message
+                assert len(sessions[session_id]["history"]) == 2
+        finally:
+            api_module.config = original_config
+
+
+# ---------------------------------------------------------------------------
+# POST /agent/notify_applied tests
+# ---------------------------------------------------------------------------
+
+class TestNotifyAppliedEndpoint:
+    """Tests for the notify-applied endpoint."""
+
+    def test_returns_404_for_unknown_session(self, client):
+        """Req 4.3: Return 404 if session not found."""
         response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["change-3"]
-            }
+            "/agent/notify_applied",
+            json={"session_id": "nonexistent", "change_ids": ["c1"]},
         )
-
-        # Check response
-        assert response.status_code == 200
-        data = response.json()
-        assert "change-3" in data["applied"]
-
-        # Verify file and directories were created
-        file_path = os.path.join(temp_workspace, "src", "utils", "helper.py")
-        assert os.path.exists(file_path)
-
-        with open(file_path, 'r') as f:
-            content = f.read()
-        assert content == "def helper():\n    pass\n"
-
-    def test_apply_changes_handles_missing_change(self, client, mock_session):
-        """Test that applying a non-existent change ID returns error."""
-        response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["non-existent-change"]
-            }
-        )
-
-        # Check response
-        assert response.status_code == 200
-        data = response.json()
-        assert data["applied"] == []
-        assert "non-existent-change" in data["failed"]
-        assert data["errors"]["non-existent-change"] == "Change not found"
-
-    def test_apply_changes_handles_missing_session(self, client):
-        """Test that applying changes to non-existent session returns 404."""
-        response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": "non-existent-session",
-                "change_ids": ["change-1"]
-            }
-        )
-
         assert response.status_code == 404
         assert "Session not found" in response.json()["detail"]
 
-    def test_apply_changes_handles_missing_new_content(self, client, mock_session):
-        """Test that applying a change without new_content returns error."""
-        # Add a change without new_content
-        bad_change = FileChange(
-            change_id="change-4",
-            file_path="bad.py",
-            change_type=ChangeType.CREATE,
-            new_content=None,  # Missing content
-            diff=""
-        )
-        mock_session.execution_result.all_changes.append(bad_change)
+    def test_marks_matching_changes_as_applied(self, client):
+        """Req 4.3: Mark matching FileChange objects as applied."""
+        fc1 = FileChange(change_id="c1", file_path="a.py", change_type=ChangeType.CREATE)
+        fc2 = FileChange(change_id="c2", file_path="b.py", change_type=ChangeType.MODIFY)
+        fc3 = FileChange(change_id="c3", file_path="c.py", change_type=ChangeType.DELETE)
+        sessions["sess-1"] = {
+            "workspace_path": "/ws",
+            "history": [],
+            "changes": [fc1, fc2, fc3],
+        }
 
-        # Apply the change
         response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["change-4"]
-            }
+            "/agent/notify_applied",
+            json={"session_id": "sess-1", "change_ids": ["c1", "c3"]},
         )
-
-        # Check response
         assert response.status_code == 200
         data = response.json()
-        assert "change-4" in data["failed"]
-        assert "no new_content" in data["errors"]["change-4"]
+        assert data["applied_count"] == 2
 
-    def test_apply_multiple_changes(self, client, mock_session, temp_workspace):
-        """Test applying multiple changes in one request."""
-        # Add multiple changes
-        change2 = FileChange(
-            change_id="change-5",
-            file_path="file2.py",
-            change_type=ChangeType.CREATE,
-            new_content="# File 2\n",
-            diff="+ # File 2\n"
-        )
-        change3 = FileChange(
-            change_id="change-6",
-            file_path="file3.py",
-            change_type=ChangeType.CREATE,
-            new_content="# File 3\n",
-            diff="+ # File 3\n"
-        )
-        mock_session.execution_result.all_changes.extend([change2, change3])
+        # Verify the actual FileChange objects were mutated
+        assert fc1.applied is True
+        assert fc2.applied is False
+        assert fc3.applied is True
 
-        # Apply all changes
+    def test_returns_zero_when_no_changes_match(self, client):
+        """No matching change_ids results in applied_count 0."""
+        sessions["sess-2"] = {
+            "workspace_path": "/ws",
+            "history": [],
+            "changes": [
+                FileChange(change_id="x1", file_path="x.py", change_type=ChangeType.CREATE),
+            ],
+        }
+
         response = client.post(
-            "/agent/apply_changes",
-            json={
-                "session_id": mock_session.session_id,
-                "change_ids": ["change-1", "change-5", "change-6"]
-            }
+            "/agent/notify_applied",
+            json={"session_id": "sess-2", "change_ids": ["no-match"]},
         )
-
-        # Check response
         assert response.status_code == 200
-        data = response.json()
-        assert len(data["applied"]) == 3
-        assert data["failed"] == []
+        assert response.json()["applied_count"] == 0
 
-        # Verify all files were created
-        assert os.path.exists(os.path.join(temp_workspace, "test_file.py"))
-        assert os.path.exists(os.path.join(temp_workspace, "file2.py"))
-        assert os.path.exists(os.path.join(temp_workspace, "file3.py"))
+    def test_does_not_double_count_already_applied(self, client):
+        """Already-applied changes are not counted again."""
+        fc = FileChange(
+            change_id="c1", file_path="a.py",
+            change_type=ChangeType.CREATE, applied=True,
+        )
+        sessions["sess-3"] = {
+            "workspace_path": "/ws",
+            "history": [],
+            "changes": [fc],
+        }
+
+        response = client.post(
+            "/agent/notify_applied",
+            json={"session_id": "sess-3", "change_ids": ["c1"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["applied_count"] == 0
+        assert fc.applied is True  # still applied
+
+    def test_empty_change_ids_list(self, client):
+        """Empty change_ids list returns applied_count 0."""
+        sessions["sess-4"] = {
+            "workspace_path": "/ws",
+            "history": [],
+            "changes": [
+                FileChange(change_id="c1", file_path="a.py", change_type=ChangeType.CREATE),
+            ],
+        }
+
+        response = client.post(
+            "/agent/notify_applied",
+            json={"session_id": "sess-4", "change_ids": []},
+        )
+        assert response.status_code == 200
+        assert response.json()["applied_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_sse_events(raw: str) -> list[dict]:
+    """Parse raw SSE text into a list of {event, data} dicts."""
+    events = []
+    current_event = None
+    current_data = None
+
+    for line in raw.split("\n"):
+        if line.startswith("event: "):
+            current_event = line[len("event: "):]
+        elif line.startswith("data: "):
+            current_data = line[len("data: "):]
+        elif line == "" and current_event is not None and current_data is not None:
+            events.append({
+                "event": current_event,
+                "data": json.loads(current_data),
+            })
+            current_event = None
+            current_data = None
+
+    return events

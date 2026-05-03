@@ -130,12 +130,6 @@ def validate_config_values(data: dict) -> list[str]:
     if port is not None and (int(port) < 1 or int(port) > 65535):
         errors.append("agent.port must be between 1 and 65535")
 
-    # Context section
-    ctx = data.get("context", {})
-    chunk_size = ctx.get("chunk_size")
-    if chunk_size is not None and int(chunk_size) <= 0:
-        errors.append("context.chunk_size must be positive")
-
     return errors
 
 

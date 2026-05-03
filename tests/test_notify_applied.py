@@ -1,19 +1,23 @@
 """Tests for POST /agent/notify_applied endpoint."""
 import pytest
-from datetime import datetime
 from fastapi.testclient import TestClient
 
 from server.api import app, sessions
-from agent.models import (
-    AgentSession, SessionStatus, FileChange, ChangeType,
-    ExecutionResult,
-)
+from agent.models import FileChange, ChangeType
 
 
 @pytest.fixture
 def client():
     """Create test client."""
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def clear_sessions():
+    """Clear sessions before each test."""
+    sessions.clear()
+    yield
+    sessions.clear()
 
 
 @pytest.fixture
@@ -45,23 +49,12 @@ def session_with_changes():
         ),
     ]
 
-    execution_result = ExecutionResult(
-        plan_id="plan-1",
-        status="completed",
-        completed_tasks=["t1"],
-        failed_tasks=[],
-        all_changes=changes,
-    )
-
-    session = AgentSession(
-        session_id=session_id,
-        workspace_path="/tmp/workspace",
-        execution_result=execution_result,
-        status=SessionStatus.COMPLETED,
-    )
-
-    sessions[session_id] = session
-    yield session
+    sessions[session_id] = {
+        "workspace_path": "/tmp/workspace",
+        "history": [],
+        "changes": changes,
+    }
+    yield session_id, changes
     sessions.pop(session_id, None)
 
 
@@ -70,38 +63,39 @@ class TestNotifyApplied:
 
     def test_marks_matching_changes_as_applied(self, client, session_with_changes):
         """Successful notification marks the specified changes as applied."""
+        session_id, changes = session_with_changes
         response = client.post(
             "/agent/notify_applied",
             json={
-                "session_id": session_with_changes.session_id,
+                "session_id": session_id,
                 "change_ids": ["c1", "c3"],
             },
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["marked_applied"] == 2
+        assert data["applied_count"] == 2
 
         # Verify the correct changes were marked
-        changes = session_with_changes.execution_result.all_changes
         assert changes[0].applied is True   # c1
         assert changes[1].applied is False  # c2 — not in request
         assert changes[2].applied is True   # c3
 
     def test_marks_all_changes_as_applied(self, client, session_with_changes):
         """Notifying with all change IDs marks every change as applied."""
+        session_id, changes = session_with_changes
         response = client.post(
             "/agent/notify_applied",
             json={
-                "session_id": session_with_changes.session_id,
+                "session_id": session_id,
                 "change_ids": ["c1", "c2", "c3"],
             },
         )
 
         assert response.status_code == 200
-        assert response.json()["marked_applied"] == 3
+        assert response.json()["applied_count"] == 3
 
-        for change in session_with_changes.execution_result.all_changes:
+        for change in changes:
             assert change.applied is True
 
     def test_returns_404_for_unknown_session(self, client):
@@ -119,48 +113,50 @@ class TestNotifyApplied:
 
     def test_unmatched_change_ids_return_zero(self, client, session_with_changes):
         """Change IDs that don't match any changes produce no error, just zero marked."""
+        session_id, changes = session_with_changes
         response = client.post(
             "/agent/notify_applied",
             json={
-                "session_id": session_with_changes.session_id,
+                "session_id": session_id,
                 "change_ids": ["nonexistent-1", "nonexistent-2"],
             },
         )
 
         assert response.status_code == 200
-        assert response.json()["marked_applied"] == 0
+        assert response.json()["applied_count"] == 0
 
         # Verify nothing was marked
-        for change in session_with_changes.execution_result.all_changes:
+        for change in changes:
             assert change.applied is False
 
     def test_mixed_matched_and_unmatched_ids(self, client, session_with_changes):
         """A mix of valid and invalid change IDs marks only the valid ones."""
+        session_id, changes = session_with_changes
         response = client.post(
             "/agent/notify_applied",
             json={
-                "session_id": session_with_changes.session_id,
+                "session_id": session_id,
                 "change_ids": ["c2", "bogus-id"],
             },
         )
 
         assert response.status_code == 200
-        assert response.json()["marked_applied"] == 1
+        assert response.json()["applied_count"] == 1
 
-        changes = session_with_changes.execution_result.all_changes
         assert changes[0].applied is False  # c1
         assert changes[1].applied is True   # c2
         assert changes[2].applied is False  # c3
 
     def test_empty_change_ids_list(self, client, session_with_changes):
         """An empty change_ids list marks nothing and returns zero."""
+        session_id, _ = session_with_changes
         response = client.post(
             "/agent/notify_applied",
             json={
-                "session_id": session_with_changes.session_id,
+                "session_id": session_id,
                 "change_ids": [],
             },
         )
 
         assert response.status_code == 200
-        assert response.json()["marked_applied"] == 0
+        assert response.json()["applied_count"] == 0

@@ -1,5 +1,5 @@
 """Configuration management for the agent system."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Any
 import yaml
 import os
@@ -29,35 +29,6 @@ class AgentConfig:
 
 
 @dataclass
-class VectorDBConfig:
-    """Vector database configuration."""
-    type: str
-    host: str
-    port: int
-    collection_prefix: str
-    in_memory: bool
-
-
-@dataclass
-class ContextConfig:
-    """Context engine configuration."""
-    embedding_model_path: str
-    vector_db: VectorDBConfig
-    chunk_size: int
-    chunk_overlap: int
-    file_patterns: List[str]
-    exclude_patterns: List[str]
-
-
-@dataclass
-class WebSearchConfig:
-    """Web search tool configuration."""
-    enabled: bool
-    max_results: int
-    timeout: int
-
-
-@dataclass
 class TerminalConfig:
     """Terminal tool configuration."""
     enabled: bool
@@ -74,17 +45,8 @@ class FilesystemConfig:
 @dataclass
 class ToolConfig:
     """Tool system configuration."""
-    web_search: WebSearchConfig
     terminal: TerminalConfig
     filesystem: FilesystemConfig
-
-
-@dataclass
-class PerformanceConfig:
-    """Performance configuration."""
-    max_concurrent_tasks: int
-    streaming_enabled: bool
-    cache_embeddings: bool
 
 
 @dataclass
@@ -92,9 +54,7 @@ class Config:
     """Main configuration object."""
     llm: LLMConfig
     agent: AgentConfig
-    context: ContextConfig
     tools: ToolConfig
-    performance: PerformanceConfig
 
     @classmethod
     def load(cls, config_path: str = "config.yaml") -> "Config":
@@ -133,7 +93,7 @@ class Config:
             )
 
         # Validate required sections
-        required_sections = ['llm', 'agent', 'context', 'tools', 'performance']
+        required_sections = ['llm', 'agent', 'tools']
         for section in required_sections:
             if section not in data:
                 raise ValueError(f"Missing required configuration section: {section}")
@@ -143,35 +103,25 @@ class Config:
             llm_config = LLMConfig(**data['llm'])
             agent_config = AgentConfig(**data['agent'])
 
-            # Vector DB config
-            vector_db_config = VectorDBConfig(**data['context']['vector_db'])
-            context_config = ContextConfig(
-                embedding_model_path=data['context']['embedding_model_path'],
-                vector_db=vector_db_config,
-                chunk_size=data['context']['chunk_size'],
-                chunk_overlap=data['context']['chunk_overlap'],
-                file_patterns=data['context']['file_patterns'],
-                exclude_patterns=data['context']['exclude_patterns']
-            )
+            # Tool configs — only terminal and filesystem are required.
+            # Ignore any extra subsections (e.g. legacy web_search).
+            tools_data = data['tools']
+            if 'terminal' not in tools_data:
+                raise ValueError("Missing required configuration field: 'tools.terminal'")
+            if 'filesystem' not in tools_data:
+                raise ValueError("Missing required configuration field: 'tools.filesystem'")
 
-            # Tool configs
-            web_search_config = WebSearchConfig(**data['tools']['web_search'])
-            terminal_config = TerminalConfig(**data['tools']['terminal'])
-            filesystem_config = FilesystemConfig(**data['tools']['filesystem'])
+            terminal_config = TerminalConfig(**tools_data['terminal'])
+            filesystem_config = FilesystemConfig(**tools_data['filesystem'])
             tool_config = ToolConfig(
-                web_search=web_search_config,
                 terminal=terminal_config,
                 filesystem=filesystem_config
             )
 
-            performance_config = PerformanceConfig(**data['performance'])
-
             return cls(
                 llm=llm_config,
                 agent=agent_config,
-                context=context_config,
-                tools=tool_config,
-                performance=performance_config
+                tools=tool_config
             )
 
         except KeyError as e:
@@ -186,7 +136,7 @@ class Config:
         Environment variables should be prefixed with AGENT_ and use underscores
         to separate nested keys. For example:
         - AGENT_LLM_BASE_URL overrides llm.base_url
-        - AGENT_CONTEXT_EMBEDDING_MODEL_PATH overrides context.embedding_model_path
+        - AGENT_LLM_MODEL overrides llm.model
 
         Args:
             data: Configuration dictionary
@@ -196,24 +146,20 @@ class Config:
         """
         # LLM overrides
         if 'AGENT_LLM_BASE_URL' in os.environ:
-            data['llm']['base_url'] = os.environ['AGENT_LLM_BASE_URL']
+            data.setdefault('llm', {})['base_url'] = os.environ['AGENT_LLM_BASE_URL']
         if 'AGENT_LLM_MODEL' in os.environ:
-            data['llm']['model'] = os.environ['AGENT_LLM_MODEL']
+            data.setdefault('llm', {})['model'] = os.environ['AGENT_LLM_MODEL']
         if 'AGENT_LLM_PROVIDER' in os.environ:
-            data['llm']['provider'] = os.environ['AGENT_LLM_PROVIDER']
+            data.setdefault('llm', {})['provider'] = os.environ['AGENT_LLM_PROVIDER']
         if 'AGENT_LLM_API_KEY' in os.environ:
-            data['llm']['api_key'] = os.environ['AGENT_LLM_API_KEY']
+            data.setdefault('llm', {})['api_key'] = os.environ['AGENT_LLM_API_KEY']
         if 'AGENT_LLM_CONTEXT_WINDOW' in os.environ:
-            data['llm']['context_window'] = int(os.environ['AGENT_LLM_CONTEXT_WINDOW'])
+            data.setdefault('llm', {})['context_window'] = int(os.environ['AGENT_LLM_CONTEXT_WINDOW'])
 
         # Agent overrides
         if 'AGENT_HOST' in os.environ:
-            data['agent']['host'] = os.environ['AGENT_HOST']
+            data.setdefault('agent', {})['host'] = os.environ['AGENT_HOST']
         if 'AGENT_PORT' in os.environ:
-            data['agent']['port'] = int(os.environ['AGENT_PORT'])
-
-        # Context overrides
-        if 'AGENT_CONTEXT_EMBEDDING_MODEL_PATH' in os.environ:
-            data['context']['embedding_model_path'] = os.environ['AGENT_CONTEXT_EMBEDDING_MODEL_PATH']
+            data.setdefault('agent', {})['port'] = int(os.environ['AGENT_PORT'])
 
         return data
