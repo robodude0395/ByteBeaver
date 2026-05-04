@@ -22,6 +22,7 @@ from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 from strands.models.ollama import OllamaModel
 from strands.models.anthropic import AnthropicModel
+from strands.models.llamacpp import LlamaCppModel
 
 from agent.models import FileChange, ChangeType
 from config import Config
@@ -32,7 +33,7 @@ from tools.terminal import TerminalTools
 logger = logging.getLogger(__name__)
 
 # Valid LLM provider values
-OPENAI_COMPATIBLE_PROVIDERS = ("openai_compatible", "llamacpp", "vllm")
+OPENAI_COMPATIBLE_PROVIDERS = ("openai_compatible", "vllm")
 
 SYSTEM_PROMPT = """\
 You are ByteBeaver, a helpful AI coding assistant embedded in the user's local \
@@ -97,9 +98,10 @@ def _create_model(config: Config):
     """Create the appropriate Strands model based on the configured provider.
 
     Provider mapping:
-        openai_compatible / llamacpp / vllm → OpenAIModel
-        ollama                               → OllamaModel
-        anthropic                            → AnthropicModel
+        openai_compatible / vllm → OpenAIModel
+        llamacpp                 → LlamaCppModel (handles tool calling client-side)
+        ollama                   → OllamaModel
+        anthropic                → AnthropicModel
 
     Args:
         config: Loaded Config object
@@ -112,6 +114,17 @@ def _create_model(config: Config):
     """
     provider = config.llm.provider
     model_id = config.llm.model
+
+    if provider == "llamacpp":
+        # LlamaCppModel handles tool calling client-side — no --jinja needed
+        return LlamaCppModel(
+            base_url=config.llm.base_url.rstrip("/").removesuffix("/v1"),
+            model_id=model_id,
+            params={
+                "max_tokens": config.llm.max_tokens,
+                "temperature": config.llm.temperature,
+            },
+        )
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return OpenAIModel(

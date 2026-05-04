@@ -53,6 +53,17 @@ if [ "$FLASH_ATTN" = "true" ]; then
 fi
 
 # Run llama-server
+# NOTE: Add --jinja flag if your llama.cpp build supports it (requires recent build).
+# Without --jinja, tool calling may not work properly with the Strands SDK.
+# Alternative: use Ollama which handles tool calling natively.
+JINJA_FLAG=""
+if llama-server --help 2>&1 | grep -q -- '--jinja'; then
+    JINJA_FLAG="--jinja"
+    echo "Jinja template support: enabled"
+else
+    echo "Jinja template support: not available (consider updating llama.cpp)"
+fi
+
 llama-server \
     --model "$MODEL_PATH" \
     --ctx-size "$CONTEXT_SIZE" \
@@ -62,6 +73,6 @@ llama-server \
     --threads "$THREADS" \
     --batch-size "$BATCH_SIZE" \
     --ubatch-size "$UBATCH_SIZE" \
-    --jinja \
+    $JINJA_FLAG \
     $FLASH_ATTN_FLAG \
     --log-disable
