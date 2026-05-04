@@ -24,6 +24,27 @@ from strands.models.ollama import OllamaModel
 from strands.models.anthropic import AnthropicModel
 from strands.models.llamacpp import LlamaCppModel
 
+# ---------------------------------------------------------------------------
+# Monkey-patch: fix Strands SDK Ollama provider crash when eval_count is None
+# https://github.com/strands-agents/sdk-python — OllamaModel.format_chunk()
+# tries to add eval_count + prompt_eval_count but Ollama returns None for
+# these fields after tool calls. This patch defaults them to 0.
+# ---------------------------------------------------------------------------
+_original_ollama_format_chunk = OllamaModel.format_chunk
+
+def _patched_ollama_format_chunk(self, event):
+    if event.get("chunk_type") == "metadata":
+        data = event.get("data")
+        if data is not None:
+            if getattr(data, "eval_count", None) is None:
+                data.eval_count = 0
+            if getattr(data, "prompt_eval_count", None) is None:
+                data.prompt_eval_count = 0
+    return _original_ollama_format_chunk(self, event)
+
+OllamaModel.format_chunk = _patched_ollama_format_chunk
+# ---------------------------------------------------------------------------
+
 from agent.models import FileChange, ChangeType
 from config import Config
 from tools.filesystem import FilesystemTools
