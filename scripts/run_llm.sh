@@ -62,5 +62,6 @@ llama-server \
     --threads "$THREADS" \
     --batch-size "$BATCH_SIZE" \
     --ubatch-size "$UBATCH_SIZE" \
+    --jinja \
     $FLASH_ATTN_FLAG \
     --log-disable
