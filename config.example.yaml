@@ -1,8 +1,8 @@
 # LLM Server Configuration
 llm:
-  provider: "llamacpp"  # llamacpp, openai_compatible, anthropic, ollama
-  base_url: "http://localhost:8001"
-  model: "qwen2.5-coder-14b-instruct"
+  provider: "ollama"  # ollama, llamacpp, openai_compatible, anthropic
+  base_url: "http://localhost:11434"
+  model: "qwen2.5-coder:14b"
   max_tokens: 2048
   temperature: 0.2
   context_window: 8192
