@@ -6,13 +6,13 @@ set -e
 # Configuration
 MODEL_PATH="${MODEL_PATH:-models/qwen2.5-coder-14b-instruct-q4_k_m.gguf}"
 CONTEXT_SIZE="${CONTEXT_SIZE:-8192}"
-GPU_LAYERS="${GPU_LAYERS:-48}"
+GPU_LAYERS="${GPU_LAYERS:-35}"
 PORT="${PORT:-8001}"
 HOST="${HOST:-0.0.0.0}"
 THREADS="${THREADS:-6}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 UBATCH_SIZE="${UBATCH_SIZE:-256}"
-FLASH_ATTN="${FLASH_ATTN:-true}"
+FLASH_ATTN="${FLASH_ATTN:-false}"
 
 # Check if model file exists
 if [ ! -f "$MODEL_PATH" ]; then
