@@ -193,18 +193,38 @@ async def process_prompt_stream(request: PromptRequest):
                 file_proxy_url=request.file_proxy_url,
             )
 
-            # Run the synchronous generator in a thread and iterate events
+            # Use a queue to stream events from the background thread
+            import queue as queue_mod
+            event_queue: queue_mod.Queue = queue_mod.Queue()
+
             def _run_agent():
-                return list(
-                    agent_wrapper.run(
+                try:
+                    for event_dict in agent_wrapper.run(
                         message=request.prompt,
                         conversation_history=session["history"][:-1],
-                    )
-                )
+                    ):
+                        event_queue.put(event_dict)
+                except Exception as exc:
+                    event_queue.put({"event": "error", "data": {"error": str(exc)}})
+                finally:
+                    event_queue.put(None)  # sentinel
 
-            events = await asyncio.to_thread(_run_agent)
+            import threading
+            agent_thread = threading.Thread(target=_run_agent, daemon=True)
+            agent_thread.start()
 
-            for event_dict in events:
+            while True:
+                # Poll the queue, yielding control to the event loop between checks
+                try:
+                    event_dict = await asyncio.to_thread(event_queue.get, True, 0.1)
+                except Exception:
+                    if not agent_thread.is_alive():
+                        break
+                    continue
+
+                if event_dict is None:
+                    break
+
                 event_type = event_dict.get("event", "")
                 event_data = event_dict.get("data", {})
 
