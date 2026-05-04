@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
@@ -33,17 +34,6 @@ from server.validation import (
 from utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Local Offline Coding Agent API")
-
-# CORS middleware — allow all origins for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ---------------------------------------------------------------------------
 # In-memory session management
@@ -73,11 +63,11 @@ def get_or_create_session(
 
 
 # ---------------------------------------------------------------------------
-# Startup
+# Lifespan (startup / shutdown)
 # ---------------------------------------------------------------------------
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(application: FastAPI):
     """Load configuration and set up logging on server start."""
     global config
 
@@ -103,6 +93,20 @@ async def startup_event():
         )
     else:
         setup_logging()
+
+    yield  # Server runs here
+
+
+app = FastAPI(title="Local Offline Coding Agent API", lifespan=lifespan)
+
+# CORS middleware — allow all origins for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
